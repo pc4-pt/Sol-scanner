@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
   executeBuySwap, executeSellSwap,
-  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd,
+  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd, simulateRoundTrip,
   computeAdaptiveStopLoss,
   DEFAULT_TRADE_SETTINGS, SOL_MINT, PRICE_POLL_MS,
 } from "./tradingEngine.js";
@@ -288,6 +288,31 @@ export function useTrading() {
     try {
       const lamports = Math.round(queueItem.stakeSOL * 1_000_000_000);
 
+      // ── Honeypot / dead-liquidity guard ──────────────────────────────────
+      // Confirm the token can actually be SOLD before we buy it. This is the
+      // guard against getting stuck in an unsellable position.
+      if (settings.preBuySellCheck ?? true) {
+        notify(`Checking ${queueItem.symbol} is sellable…`, "info");
+        const rt = await simulateRoundTrip({
+          tokenMint: queueItem.tokenAddress, amountLamports: lamports,
+          slippageBps: settings.slippageBps,
+        });
+        const minRec = settings.minRoundTripRecovery ?? 0.7;
+        if (!rt.sellable) {
+          notify(`✕ ${queueItem.symbol} blocked — ${rt.reason}`, "warn");
+          setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
+          buyFiringRef.current.delete(queueItem.id);
+          return;
+        }
+        if (rt.recovered < minRec) {
+          notify(`✕ ${queueItem.symbol} blocked — round-trip recovers only `
+            + `${(rt.recovered * 100).toFixed(0)}% (transfer tax or thin liquidity)`, "warn");
+          setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
+          buyFiringRef.current.delete(queueItem.id);
+          return;
+        }
+      }
+
       const { sig, outAmount, priceImpact, inAmountSol } = await executeBuySwap({
         inputMint:      SOL_MINT,
         outputMint:     queueItem.tokenAddress,
@@ -442,6 +467,13 @@ export function useTrading() {
       const msg = err?.message || String(err);
       notify(`Sell failed: ${msg}`, "error");
       console.error("[executeSell]", err);
+      // Flag the position as stuck so the RETRY / ABANDON controls appear in the UI.
+      // (Previously only auto-sells set this, leaving manually-sold-then-failed
+      // positions with no escape hatch.)
+      setPositions(prev => prev.map(p =>
+        p.id === position.id
+          ? { ...p, stuck: true, stuckReason: msg.slice(0, 120) }
+          : p));
       fireNotification({
         kind: "error",
         title: `✗ Sell failed: ${position.symbol}`,

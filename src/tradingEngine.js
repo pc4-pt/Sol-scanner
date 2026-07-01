@@ -70,10 +70,42 @@ export async function getQuote({ inputMint, outputMint, amountLamports, slippage
   return data;
 }
 
+// ── Honeypot / dead-liquidity guard: simulate a full round trip ───────────────
+// Quotes SOL->token then token->SOL for the tokens we'd receive, WITHOUT signing
+// anything. If the sell leg has no route the token can't be sold (honeypot / dead
+// liquidity). If we'd recover only a small fraction, it has a transfer tax or the
+// liquidity is too thin to exit. Either way, don't buy. This is the guard against
+// getting stuck in an unsellable position.
+export async function simulateRoundTrip({ tokenMint, amountLamports, slippageBps = 200 }) {
+  let buy;
+  try {
+    buy = await getQuote({ inputMint: SOL_MINT, outputMint: tokenMint, amountLamports, slippageBps });
+  } catch (err) {
+    return { sellable: false, recovered: 0, reason: `No buy route: ${err.message}` };
+  }
+  const tokensOut = parseInt(buy.outAmount || 0);
+  if (!tokensOut) return { sellable: false, recovered: 0, reason: "Buy route returned 0 tokens" };
+
+  try {
+    const sell = await getQuote({ inputMint: tokenMint, outputMint: SOL_MINT, amountLamports: tokensOut, slippageBps });
+    const solBack   = parseInt(sell.outAmount || 0);
+    const recovered = amountLamports > 0 ? solBack / amountLamports : 0;
+    return {
+      sellable:   recovered > 0,
+      recovered,                                    // fraction of SOL you'd get back
+      buyImpact:  parseFloat(buy.priceImpactPct || 0),
+      sellImpact: parseFloat(sell.priceImpactPct || 0),
+      reason:     "",
+    };
+  } catch (err) {
+    // No sell route = honeypot / can't exit.
+    return { sellable: false, recovered: 0, reason: `Cannot sell back (honeypot/no liquidity): ${err.message}` };
+  }
+}
+
 // ── Step 2: POST /api/swap ────────────────────────────────────────────────────
 // dynamicSlippage: when true, Jupiter calculates optimal slippage based on the
-// current routing and overrides the slippageBps from the quote. This is much
-// more reliable for volatile tokens than fixed slippage.
+// current routing and overrides the slippageBps from the quote.
 export async function getSwapTransaction({ quoteResponse, userPublicKey, dynamicSlippage = false, dynamicMaxBps = 3000 }) {
   const body = {
     quoteResponse,
@@ -525,8 +557,16 @@ export const DEFAULT_TRADE_SETTINGS = {
   //              on the second wave). Kept for reference/market-view only.
   // "off"      = no auto-entry; manual only.
   entrySource:        "launch",
-  minLaunchScore:     55,         // queue launches scoring >= this (0-100 graduation likelihood)
+  minLaunchScore:     55,         // show launches scoring >= this in the feed
   launchAutoQueue:    false,      // false = alert/watchlist only; you click to queue (paper-first)
+  // ── Launch entry-quality gates (auto-queue path) — improve confidence, avoid dying tokens ──
+  minExecScore:       68,         // auto-queue only launches scoring >= this (higher bar than display)
+  minDevSol:          1.0,        // require the dev's own initial buy >= this many SOL (tiny buys die)
+  blockTokenMills:    true,       // skip creators who've launched a lot and never graduated (spam factories)
+  millMinLaunches:    5,          // "a lot" = this many prior launches with zero graduations
+  // ── Honeypot / dead-liquidity guard (all buys) — KEPT ────────────────────
+  preBuySellCheck:    true,       // simulate a sell-back before buying; block if unsellable
+  minRoundTripRecovery: 0.7,      // block if a round trip recovers less than this fraction (tax/illiquid)
   // ── Legacy momentum gates (only used when entrySource === "momentum") ─────
   // DEPRECATED as entry alpha by the sol-early-signal research. Left in place so the
   // momentum view still renders, but they no longer drive entries by default.

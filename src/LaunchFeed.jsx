@@ -38,17 +38,26 @@ export function LaunchFeed({ trading }) {
     () => [...launches].sort((a, b) => b.score - a.score), [launches]);
   const isPlaceholder = !!MODEL_INFO._note;
 
-  // Auto-queue newly-arrived launches above threshold (deduped) when enabled.
+  // Auto-queue newly-arrived launches that clear the QUALITY gates (deduped) when enabled.
+  // These gates factor the creator score to avoid tokens likely to die on/after creation:
+  //   minExecScore — a higher bar than the display filter
+  //   minDevSol    — tiny dev buys dominate the tokens that instantly die
+  //   token mills  — creators with many prior launches and zero graduations (spam)
   const seen = useRef(new Set());
   useEffect(() => {
     if (!s.launchAutoQueue) return;
+    const minExec = s.minExecScore ?? 68;
+    const minDev  = s.minDevSol ?? 1.0;
+    const millN   = s.millMinLaunches ?? 5;
     for (const l of launches) {
-      if (l.score >= minScore && !seen.current.has(l.mint)) {
-        seen.current.add(l.mint);
-        trading.addLaunchToQueue(l);
-      }
+      if (seen.current.has(l.mint)) continue;
+      if (l.score < minExec) continue;
+      if ((l.devSol ?? 0) < minDev) continue;
+      if (s.blockTokenMills && l.priorCount >= millN && (l.priorGrads ?? 0) === 0) continue;
+      seen.current.add(l.mint);
+      trading.addLaunchToQueue(l);
     }
-  }, [launches, s.launchAutoQueue, minScore, trading]);
+  }, [launches, s.launchAutoQueue, s.minExecScore, s.minDevSol, s.blockTokenMills, s.millMinLaunches, trading]);
 
   const set = (patch) => trading.updateSettings(patch);
 
