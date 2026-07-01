@@ -463,8 +463,11 @@ function QueueItem({ item, onApprove, onDismiss, executing, connected }) {
   const lastSeen  = Math.floor((now - (item.lastUpdated || item.queuedAt)) / 60000);
   const sigColor  = item.signal?.color || C.muted2;
 
-  // Staleness: warn if not refreshed in last 3 scan cycles (~3 min)
-  const isStale   = lastSeen >= 3;
+  // Staleness: warn if not refreshed in last 3 scan cycles (~3 min).
+  // LAUNCH items come from the t=0 stream, not the DexScreener scan, so they are
+  // never "seen in a scan" and staleness does not apply to them.
+  const isLaunch  = item.signal?.type === "LAUNCH";
+  const isStale   = !isLaunch && lastSeen >= 3;
   const staleColor = lastSeen >= 7 ? C.red : C.warn;
 
   // Price change since first queued

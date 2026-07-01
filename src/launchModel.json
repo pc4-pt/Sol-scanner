@@ -1,28 +1,9 @@
 {
-  "features": [
-    "f_dev_sol",
-    "f_prior_rate",
-    "f_prior_count",
-    "f_mayhem"
-  ],
-  "mean": [
-    0.54845249194372,
-    0.00594068678629953,
-    2.6877564564401757,
-    0.2462806324363376
-  ],
-  "scale": [
-    0.7441968681242026,
-    0.049375456772781136,
-    2.2027105167207237,
-    0.430843918981219
-  ],
-  "coef": [
-    0.992881763815247,
-    0.26317810125652014,
-    -0.780567227522539,
-    -0.3214978603977687
-  ],
-  "intercept": -1.1925691017952909,
-  "base_rate": 0.012281744890065277
+  "_note": "PLACEHOLDER coefficients (direction-correct, from synthetic validation). REPLACE this file with the data/launch_score_model.json produced by running launch_score.py on your REAL creator_dataset.csv. The scoring code reads this verbatim.",
+  "features": ["f_dev_sol", "f_prior_rate", "f_prior_count", "f_mayhem"],
+  "mean": [0.60, 0.008, 1.10, 0.10],
+  "scale": [0.557, 0.0494, 1.217, 0.300],
+  "coef": [0.875, 0.134, -0.280, -0.063],
+  "intercept": -0.606,
+  "base_rate": 0.015
 }

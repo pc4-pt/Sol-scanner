@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
   executeBuySwap, executeSellSwap,
-  fetchCurrentPrice, calcPnl, shouldTriggerExit,
+  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd,
   computeAdaptiveStopLoss,
   DEFAULT_TRADE_SETTINGS, SOL_MINT, PRICE_POLL_MS,
 } from "./tradingEngine.js";
@@ -305,14 +305,23 @@ export function useTrading() {
         ? computeAdaptiveStopLoss(entryVol, queueItem.stopLossPct)
         : queueItem.stopLossPct;
 
+      // Entry price: prefer a fresh market price at fill time (unit-consistent with
+      // the monitor's fetchCurrentPrice); fall back to the queued/seeded price. For
+      // launch tokens not yet listed this stays the reserve-based estimate.
+      let entryPrice = queueItem.priceUsd || 0;
+      try {
+        const live = await fetchCurrentPrice(queueItem.tokenAddress);
+        if (live) entryPrice = live;
+      } catch { /* keep seeded price */ }
+
       const position = {
         id:             `pos_${Date.now()}`,
         pairAddress:    queueItem.pairAddress,
         tokenAddress:   queueItem.tokenAddress,
         symbol:         queueItem.symbol,
         name:           queueItem.name,
-        entryPrice:     queueItem.priceUsd,
-        currentPrice:   queueItem.priceUsd,
+        entryPrice:     entryPrice,
+        currentPrice:   entryPrice,
         solSpent:       inAmountSol,
         tokensReceived: outAmount,
         takeProfitPct:  queueItem.takeProfitPct,
@@ -713,43 +722,33 @@ export function useTrading() {
   }, [settings, positions, addToQueue, notify]);
 
   // ── Launch-score entry path (t=0 PumpPortal stream) ─────────────────────────
-  // Construct a token object the existing queue/safety/execution plumbing accepts,
-  // from a launch event scored by launchScore(). Runs the same RugCheck safety gate.
+  // Brand-new tokens are not yet on RugCheck (they'd 404), and firing a RugCheck
+  // call per auto-queued launch floods the API to 429s. So we do NOT gate launch
+  // queueing on RugCheck — it can't assess a token this young. Safety is advisory
+  // here; enforce it at buy time if desired. We seed an initial USD price from the
+  // bonding-curve reserves so the queue shows a real price (not 0) and P&L has a basis.
   const addLaunchToQueue = useCallback(async (launch) => {
+    let priceUsd = 0;
+    try {
+      const solUsd = await getSolUsd();
+      if (launch.priceSol > 0 && solUsd > 0) priceUsd = launch.priceSol * solUsd;
+    } catch { /* leave 0 — display falls back gracefully */ }
+
     const token = {
       baseToken:   { address: launch.mint, symbol: launch.symbol, name: launch.name },
       pairAddress: launch.mint,              // mint as the unique key (no DEX pair yet)
-      priceUsd:    0,
+      priceUsd,
       _score:      launch.score,
     };
     const signal = {
       type: "LAUNCH",
-      strength: launch.score >= 70 ? "STRONG" : launch.score >= 50 ? "MODERATE" : "WEAK",
+      strength: launch.score >= 70 ? "STRONG" : launch.score >= 55 ? "MODERATE" : "WEAK",
       conf: launch.score, color: "#7c5cff", icon: "✦", volatility: 0,
       detail: `t=0 score ${launch.score} · dev ${Number(launch.devSol).toFixed(2)} SOL · `
             + `creator ${launch.priorGrads}/${launch.priorCount} grads`,
     };
-    if (settings.enableSafetyCheck === false) {
-      addToQueue(token, signal);
-      return;
-    }
-    try {
-      const safety = await checkTokenSafety(launch.mint, {
-        maxRiskScore:       settings.maxRiskScore       ?? 60,
-        allowUnprofiled:    settings.allowUnprofiled    ?? true,  // brand-new tokens often unprofiled
-        blockHardFails:     settings.blockHardFails     ?? true,
-        blockHighOwnership: settings.blockHighOwnership ?? true,
-      });
-      if (!safety.safe) {
-        notify(`✕ ${launch.symbol} blocked: ${safety.reason}`, "warn");
-        return;
-      }
-      addToQueue(token, signal, safety.report);
-    } catch (err) {
-      console.warn("[launch safety] check failed:", err.message);
-      addToQueue(token, signal);   // fail-open to queue (still manual unless autoExecute)
-    }
-  }, [settings, addToQueue, notify]);
+    addToQueue(token, signal);
+  }, [addToQueue]);
   const stats = {
     openCount:   positions.filter(p => p.status === "open").length,
     queueCount:  queue.length,

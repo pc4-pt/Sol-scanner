@@ -46,6 +46,11 @@ export function createPumpStream({ onLaunch, onMigration, onStatus }) {
           name: m.name || "",
           devSol: Number(m.solAmount) || 0,
           marketCapSol: Number(m.marketCapSol) || 0,
+          vSol: Number(m.vSolInBondingCurve) || 0,
+          vTokens: Number(m.vTokensInBondingCurve) || 0,
+          // bonding-curve price at creation, in SOL per token (reserves ratio)
+          priceSol: Number(m.vTokensInBondingCurve) > 0
+            ? Number(m.vSolInBondingCurve) / Number(m.vTokensInBondingCurve) : 0,
           isMayhem: !!m.is_mayhem_mode,
           pool: m.pool || "pump",
           ts: Date.now(),

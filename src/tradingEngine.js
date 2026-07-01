@@ -423,6 +423,16 @@ export async function fetchCurrentPrice(tokenAddress) {
   } catch { return null; }
 }
 
+// Cached SOL/USD (5 min). Used to price brand-new launch tokens in USD so their
+// entry price is unit-consistent with the DexScreener USD prices used everywhere else.
+let _solUsd = { v: 0, ts: 0 };
+export async function getSolUsd() {
+  if (_solUsd.v && Date.now() - _solUsd.ts < 300000) return _solUsd.v;
+  const p = await fetchCurrentPrice(SOL_MINT);
+  if (p) _solUsd = { v: p, ts: Date.now() };
+  return _solUsd.v || 0;
+}
+
 // ── PnL helpers ───────────────────────────────────────────────────────────────
 export function calcPnl(position, currentPrice) {
   if (!position.entryPrice || !currentPrice) return null;
