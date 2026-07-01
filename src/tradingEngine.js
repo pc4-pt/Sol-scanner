@@ -509,30 +509,41 @@ export const DEFAULT_TRADE_SETTINGS = {
   stopLossPct:        20,
   slippageBps:        200,
   maxPositions:       5,
+  // ── Entry source ────────────────────────────────────────────────────────
+  // "launch"   = t=0 launch-score stream (PumpPortal). The validated LEADING signal.
+  // "momentum" = legacy DexScreener momentum (DEPRECATED — no leading edge; fires
+  //              on the second wave). Kept for reference/market-view only.
+  // "off"      = no auto-entry; manual only.
+  entrySource:        "launch",
+  minLaunchScore:     55,         // queue launches scoring >= this (0-100 graduation likelihood)
+  launchAutoQueue:    false,      // false = alert/watchlist only; you click to queue (paper-first)
+  // ── Legacy momentum gates (only used when entrySource === "momentum") ─────
+  // DEPRECATED as entry alpha by the sol-early-signal research. Left in place so the
+  // momentum view still renders, but they no longer drive entries by default.
   minScore:           70,
-  minConfidence:      75,         // raised from 60 — filter marginal signals
+  minConfidence:      75,
   minVolLiqRatio:     2.0,
   requireMomentum:    true,
+  confirmScans:       2,          // the "wait for a second sighting" gate = the too-late mechanism
+  // ── Sizing ──────────────────────────────────────────────────────────────
   scaleByConfidence:  true,
   cooldownMinutes:    30,
   autoExecute:        false,
-  // ── Entry confirmation ──────────────────────────────────────────────────
-  confirmScans:       2,          // require 2 sightings before queueing (Stage B)
-  // ── Token safety (RugCheck) ─────────────────────────────────────────────
+  // ── Token safety (RugCheck) — KEPT: protection, not alpha ────────────────
   enableSafetyCheck:  true,
   maxRiskScore:       60,
-  allowUnprofiled:    false,
+  allowUnprofiled:    true,        // brand-new launches are often unprofiled on RugCheck
   blockHardFails:     true,
   blockHighOwnership: true,
-  // ── Position management (Stage A + B) ───────────────────────────────────
+  // ── Position management (Stage A + B) — KEPT ────────────────────────────
   adaptiveStopLoss:   true,
   graceSec:           60,
   breakEvenAtPct:     5,
-  // ── Trailing take-profit ────────────────────────────────────────────────
+  // ── Trailing take-profit — KEPT: exit logic, never falsified ─────────────
   trailingEnabled:    true,       // disable fixed TP once trailing activates
   trailingActivateAt: 30,         // start trailing once position is up this %
   trailDrawdownPct:   15,         // exit when peak drops by this %
-  // ── Notifications ───────────────────────────────────────────────────────
+  // ── Notifications — KEPT ─────────────────────────────────────────────────
   notifyBrowser:      true,       // push notifications when tab is backgrounded
   notifySound:        true,       // play tone for queue/fill/exit/error events
   notifyTelegram:     false,      // route events to a personal Telegram bot
@@ -542,5 +553,5 @@ export const DEFAULT_TRADE_SETTINGS = {
   notifyOnFill:       true,       // ping when buy/sell completes
   notifyOnExit:       true,       // ping on auto-sell (TP/SL/trail)
   notifyOnError:      true,       // ping on trade failures
-  notifyMinConf:      75,         // only ping for queue events at this conf or above
+  notifyMinConf:      55,         // only ping for queue events at this score/conf or above
 };

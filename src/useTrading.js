@@ -552,6 +552,10 @@ export function useTrading() {
 
       // ── Refresh / prune existing queue items ────────────────────────────
       updated = updated.map(item => {
+        // LAUNCH items come from the t=0 PumpPortal stream, not the DexScreener
+        // scan, so the momentum-degradation prune must not touch them.
+        if (item.signal?.type === "LAUNCH") return item;
+
         const fresh = scanMap.get(item.pairAddress);
 
         // Not seen in this scan at all
@@ -616,7 +620,13 @@ export function useTrading() {
     });
 
     // ── Add new qualifying tokens (with two-scan confirmation + safety check) ─
-    if (openCount < settings.maxPositions) {
+    // The DexScreener momentum path is DEPRECATED as entry alpha: the sol-early-signal
+    // research found these signals (vol/liq, buy-pressure, acceleration, price action)
+    // have no leading edge — they fire on the second wave, after the move. Entries now
+    // come from the t=0 launch-score stream (see addLaunchToQueue). This block only runs
+    // if you explicitly set entrySource back to "momentum".
+    const entrySource = settings.entrySource ?? "launch";
+    if (entrySource === "momentum" && openCount < settings.maxPositions) {
       const confirmScans  = settings.confirmScans ?? 2;     // require this many sightings
       const candidateTTL  = 5 * 60 * 1000;                  // forget after 5 min of no sighting
 
@@ -702,7 +712,44 @@ export function useTrading() {
     }
   }, [settings, positions, addToQueue, notify]);
 
-  // ── Stats ─────────────────────────────────────────────────────────────────
+  // ── Launch-score entry path (t=0 PumpPortal stream) ─────────────────────────
+  // Construct a token object the existing queue/safety/execution plumbing accepts,
+  // from a launch event scored by launchScore(). Runs the same RugCheck safety gate.
+  const addLaunchToQueue = useCallback(async (launch) => {
+    const token = {
+      baseToken:   { address: launch.mint, symbol: launch.symbol, name: launch.name },
+      pairAddress: launch.mint,              // mint as the unique key (no DEX pair yet)
+      priceUsd:    0,
+      _score:      launch.score,
+    };
+    const signal = {
+      type: "LAUNCH",
+      strength: launch.score >= 70 ? "STRONG" : launch.score >= 50 ? "MODERATE" : "WEAK",
+      conf: launch.score, color: "#7c5cff", icon: "✦", volatility: 0,
+      detail: `t=0 score ${launch.score} · dev ${Number(launch.devSol).toFixed(2)} SOL · `
+            + `creator ${launch.priorGrads}/${launch.priorCount} grads`,
+    };
+    if (settings.enableSafetyCheck === false) {
+      addToQueue(token, signal);
+      return;
+    }
+    try {
+      const safety = await checkTokenSafety(launch.mint, {
+        maxRiskScore:       settings.maxRiskScore       ?? 60,
+        allowUnprofiled:    settings.allowUnprofiled    ?? true,  // brand-new tokens often unprofiled
+        blockHardFails:     settings.blockHardFails     ?? true,
+        blockHighOwnership: settings.blockHighOwnership ?? true,
+      });
+      if (!safety.safe) {
+        notify(`✕ ${launch.symbol} blocked: ${safety.reason}`, "warn");
+        return;
+      }
+      addToQueue(token, signal, safety.report);
+    } catch (err) {
+      console.warn("[launch safety] check failed:", err.message);
+      addToQueue(token, signal);   // fail-open to queue (still manual unless autoExecute)
+    }
+  }, [settings, addToQueue, notify]);
   const stats = {
     openCount:   positions.filter(p => p.status === "open").length,
     queueCount:  queue.length,
@@ -721,6 +768,7 @@ export function useTrading() {
     queue: sortQueue(queue, queueSort),
     queueSort, setQueueSort,
     addToQueue, removeFromQueue, updateQueueItem, clearQueue,
+    addLaunchToQueue,
     retryPosition, abandonPosition,
     positions, history,
     executing,

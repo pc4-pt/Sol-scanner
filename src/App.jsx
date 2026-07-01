@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { TradingPanel } from "./TradingPanel.jsx";
+import { LaunchFeed } from "./LaunchFeed.jsx";
 import { useTrading } from "./useTrading.js";
 
 const IS_DEV = import.meta.env?.DEV ?? false;
@@ -634,7 +635,7 @@ export default function SolScanner() {
   const [minScore, setMinScore] = useState(70);
   const [minLiq, setMinLiq] = useState(10000);
   const [maxAgeH, setMaxAgeH] = useState(72);
-  const [activeTab, setActiveTab] = useState("tokens");
+  const [activeTab, setActiveTab] = useState("launches");
   const [error, setError] = useState(null);
   const timerRef = useRef(null);
 
@@ -926,7 +927,7 @@ export default function SolScanner() {
 
         {/* ── TABS ── */}
         <div style={{ display: "flex", gap: 0, marginBottom: 0, borderBottom: "1px solid var(--border)" }}>
-          {[["tokens",`PAIRS (${displayTokens.length})`],["metas",`NARRATIVES (${metas.length})`],["filters","FILTERS"]].map(([id,label]) => (
+          {[["launches","◆ LAUNCHES (t=0)"],["tokens",`PAIRS (${displayTokens.length})`],["metas",`NARRATIVES (${metas.length})`],["filters","FILTERS"]].map(([id,label]) => (
             <button key={id} onClick={() => setActiveTab(id)} style={{
               padding: "9px 16px", background: "none", border: "none",
               borderBottom: `2px solid ${activeTab===id?"var(--accent)":"transparent"}`,
@@ -945,6 +946,9 @@ export default function SolScanner() {
             </div>
           )}
         </div>
+
+        {/* ── LAUNCHES TAB (t=0 launch-score feed — the leading-signal entry brain) ── */}
+        {activeTab === "launches" && <LaunchFeed trading={trading} />}
 
         {/* ── NARRATIVES TAB ── */}
         {activeTab === "metas" && (
