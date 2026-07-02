@@ -11,6 +11,17 @@ import { MODEL_INFO } from "./launchScore.js";
 const scoreColor = (s) =>
   s >= 70 ? "#00e5c3" : s >= 55 ? "#b8f542" : s >= 40 ? "#f0a500" : "#64748b";
 
+// eligibility state -> { label, color, canQueue }
+const ELIG = {
+  pending:   { label: "…WAITING",  color: "#64748b", canQueue: false },
+  checking:  { label: "…CHECKING", color: "#f0a500", canQueue: false },
+  eligible:  { label: "✓ ELIGIBLE", color: "#00e5c3", canQueue: true  },
+  collapsed: { label: "✗ COLLAPSED", color: "#ff3860", canQueue: false },
+  no_exit:   { label: "✗ NO EXIT",  color: "#ff3860", canQueue: false },
+  no_route:  { label: "… NO ROUTE", color: "#64748b", canQueue: false },
+};
+const eligOf = (l) => ELIG[l.eligibility?.state || "pending"] || ELIG.pending;
+
 function StatusPill({ status }) {
   const map = {
     live: ["#00e5c3", "LIVE"], connecting: ["#f0a500", "CONNECTING"],
@@ -31,18 +42,20 @@ export function LaunchFeed({ trading }) {
   const minScore = s.minLaunchScore ?? 55;
   const { launches, status, stats, migrations } = useLaunchStream({
     enabled: (s.entrySource ?? "launch") !== "off",
-    minScore: 0, keep: 80,
+    keep: 80,
+    confirmWindowSec: s.confirmWindowSec ?? 90,
+    probeSol: s.probeSol ?? 0.05,
+    minRecovery: s.minRoundTripRecovery ?? 0.7,
+    validateMinScore: Math.min(minScore, s.minExecScore ?? 68),
   });
 
   const ranked = useMemo(
     () => [...launches].sort((a, b) => b.score - a.score), [launches]);
   const isPlaceholder = !!MODEL_INFO._note;
 
-  // Auto-queue newly-arrived launches that clear the QUALITY gates (deduped) when enabled.
-  // These gates factor the creator score to avoid tokens likely to die on/after creation:
-  //   minExecScore — a higher bar than the display filter
-  //   minDevSol    — tiny dev buys dominate the tokens that instantly die
-  //   token mills  — creators with many prior launches and zero graduations (spam)
+  // Auto-queue newly-eligible launches that clear the QUALITY gates (deduped) when enabled.
+  // Only ELIGIBLE launches (survived the confirmation window, still sellable) are queued —
+  // this is what stops unvalidated/collapsed tokens from ever being auto-bought.
   const seen = useRef(new Set());
   useEffect(() => {
     if (!s.launchAutoQueue) return;
@@ -51,6 +64,7 @@ export function LaunchFeed({ trading }) {
     const millN   = s.millMinLaunches ?? 5;
     for (const l of launches) {
       if (seen.current.has(l.mint)) continue;
+      if (l.eligibility?.state !== "eligible") continue;   // survival gate
       if (l.score < minExec) continue;
       if ((l.devSol ?? 0) < minDev) continue;
       if (s.blockTokenMills && l.priorCount >= millN && (l.priorGrads ?? 0) === 0) continue;
@@ -115,9 +129,12 @@ export function LaunchFeed({ trading }) {
               : "Stream not connected."}
           </p>
         )}
-        {ranked.filter(l => l.score >= minScore).map((l) => (
+        {ranked.filter(l => l.score >= minScore).map((l) => {
+          const e = eligOf(l);
+          const canQueue = l.graduated || e.canQueue;   // graduated = definitively alive
+          return (
           <div key={l.mint} style={{ display: "grid",
-            gridTemplateColumns: "44px 1fr auto auto auto", alignItems: "center", gap: 12,
+            gridTemplateColumns: "44px 1fr auto auto auto auto", alignItems: "center", gap: 10,
             padding: "9px 12px", background: "var(--panel, #13171f)",
             border: "1px solid var(--border)", borderRadius: 8 }}>
             <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: "0.9rem",
@@ -138,12 +155,24 @@ export function LaunchFeed({ trading }) {
               fontFamily: "var(--font-mono)", textAlign: "right" }}>
               creator {l.priorGrads}/{l.priorCount}
             </div>
-            <button onClick={() => trading.addLaunchToQueue(l)} style={{
-              background: "var(--accent, #00e5c3)", color: "#06121a", border: "none", borderRadius: 6,
+            <div style={{ fontSize: "0.56rem", fontFamily: "var(--font-mono)", textAlign: "right",
+              color: l.graduated ? "#00e5c3" : e.color, minWidth: 78 }}>
+              {l.graduated ? "◆ GRADUATED" : e.label}
+              {l.eligibility?.state === "collapsed" && l.eligibility?.recovered != null &&
+                <span style={{ color: "var(--muted)" }}> {Math.round(l.eligibility.recovered*100)}%</span>}
+            </div>
+            <button onClick={() => canQueue && trading.addLaunchToQueue(l)}
+              disabled={!canQueue}
+              title={canQueue ? "Queue for buy" : `Not queueable yet (${e.label.trim()})`}
+              style={{
+              background: canQueue ? "var(--accent, #00e5c3)" : "var(--border)",
+              color: canQueue ? "#06121a" : "var(--muted)", border: "none", borderRadius: 6,
               padding: "5px 12px", fontSize: "0.62rem", fontWeight: 700, fontFamily: "var(--font-mono)",
-              cursor: "pointer", letterSpacing: "0.05em" }}>QUEUE</button>
+              cursor: canQueue ? "pointer" : "not-allowed", letterSpacing: "0.05em",
+              opacity: canQueue ? 1 : 0.5 }}>QUEUE</button>
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

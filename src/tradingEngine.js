@@ -567,6 +567,13 @@ export const DEFAULT_TRADE_SETTINGS = {
   // ── Honeypot / dead-liquidity guard (all buys) — KEPT ────────────────────
   preBuySellCheck:    true,       // simulate a sell-back before buying; block if unsellable
   minRoundTripRecovery: 0.7,      // block if a round trip recovers less than this fraction (tax/illiquid)
+  // ── Survival-confirmation window (launch feed eligibility) ────────────────
+  // Don't treat a launch as buyable at t=0. Wait this long, then re-check it's
+  // still alive & sellable (same round-trip probe). Tokens that die in the first
+  // minutes fail this and are flagged, not queued. Later than t=0, but still far
+  // ahead of graduation.
+  confirmWindowSec:   90,         // seconds after creation before eligibility is checked
+  probeSol:           0.05,       // nominal SOL size used for the sellability probe
   // ── Legacy momentum gates (only used when entrySource === "momentum") ─────
   // DEPRECATED as entry alpha by the sol-early-signal research. Left in place so the
   // momentum view still renders, but they no longer drive entries by default.

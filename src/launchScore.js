@@ -13,8 +13,28 @@ import MODEL from "./launchModel.json";
 
 const CREATOR_KEY = "solscanner_creator_history"; // creator -> { c: launches, g: graduations }
 const MINT_KEY    = "solscanner_mint_creator";    // recent mint -> creator (for migration attribution)
+const GRAD_KEY    = "solscanner_graduated";       // set of graduated mints (for live badges)
 const MAX_CREATORS = 100000;
 const MAX_MINTS    = 30000;
+const MAX_GRADS    = 20000;
+
+// ── Graduated-mint set (shared across the feed, queue, and positions) ─────────
+function loadGradSet() {
+  try { return new Set(JSON.parse(localStorage.getItem(GRAD_KEY) || "[]")); }
+  catch { return new Set(); }
+}
+export function markGraduated(mint) {
+  if (!mint) return;
+  const s = loadGradSet();
+  if (s.has(mint)) return;
+  s.add(mint);
+  let arr = [...s];
+  if (arr.length > MAX_GRADS) arr = arr.slice(arr.length - MAX_GRADS);
+  try { localStorage.setItem(GRAD_KEY, JSON.stringify(arr)); } catch {}
+}
+export function isGraduated(mint) {
+  try { return loadGradSet().has(mint); } catch { return false; }
+}
 
 function loadMap(key) {
   try { return new Map(Object.entries(JSON.parse(localStorage.getItem(key) || "{}"))); }

@@ -1,5 +1,6 @@
 // ─── TradingPanel.jsx ─────────────────────────────────────────────────────────
 import { useState, useEffect } from "react";
+import { isGraduated } from "./launchScore.js";
 import { useWalletModal } from "@solana/wallet-adapter-react-ui";
 import { QUEUE_SORT_OPTIONS, SIGNAL_PRIORITY } from "./useTrading.js";
 import {
@@ -496,6 +497,7 @@ function QueueItem({ item, onApprove, onDismiss, executing, connected }) {
         <div>
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:5,flexWrap:"wrap"}}>
             <Mono color={C.text} size="0.88rem" weight={700}>{item.symbol}</Mono>
+            {isGraduated(item.tokenAddress) && <Badge color="#00e5c3">◆ GRADUATED</Badge>}
             <Badge color={C.accent}>{item.score}</Badge>
             {item.signal&&<Badge color={sigColor}>{item.signal.icon} {item.signal.type}</Badge>}
             {item.signal&&<Badge color={sigColor}>{item.signal.conf}% conf</Badge>}
@@ -621,6 +623,7 @@ function PositionCard({ position, onSell, onRetry, onAbandon, executing, connect
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:7,flexWrap:"wrap"}}>
             <div style={{width:3,height:14,borderRadius:1,background:pnlColor,boxShadow:`0 0 5px ${pnlColor}`}}/>
             <Mono color={C.text} size="0.88rem" weight={700}>{position.symbol}</Mono>
+            {isGraduated(position.tokenAddress) && <Badge color="#00e5c3">◆ GRADUATED</Badge>}
             <Badge color={C.muted}>{age}m open</Badge>
             {position.entrySignal&&<Badge color={position.entrySignal.color}>{position.entrySignal.type}</Badge>}
             {isStuck && <Badge color={C.red}>🚫 STUCK</Badge>}
