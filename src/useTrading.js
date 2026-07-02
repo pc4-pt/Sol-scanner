@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
   executeBuySwap, executeSellSwap,
-  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd, simulateRoundTrip,
+  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd, simulateRoundTrip, fetchTokenActivity,
   computeAdaptiveStopLoss,
   DEFAULT_TRADE_SETTINGS, SOL_MINT, PRICE_POLL_MS,
 } from "./tradingEngine.js";
@@ -161,6 +161,9 @@ export function useTrading() {
       signal,
       safety:        safetyReport,                       // RugCheck summary (may be null)
       dexUrl:        `https://dexscreener.com/solana/${pairAddr}`,
+      pairAddressReal: token._pairAddress || null,   // real DEX pair for charts/activity
+      activity:      token._activity || null,        // live 5m activity (launch items)
+      trend:         [],                             // ring buffer of recent samples for trend
       queuedAt:      Date.now(),
       lastUpdated:   Date.now(),
       degradeCount:  0,
@@ -771,6 +774,9 @@ export function useTrading() {
       pairAddress: launch.mint,              // mint as the unique key (no DEX pair yet)
       priceUsd,
       _score:      launch.score,
+      _mint:       launch.mint,
+      _activity:   launch.eligibility || null,   // trades5m, priceChange5m, buys/sells, vol, liq, pairAddress
+      _pairAddress: launch.eligibility?.pairAddress || null,
     };
     const signal = {
       type: "LAUNCH",
@@ -781,6 +787,43 @@ export function useTrading() {
     };
     addToQueue(token, signal);
   }, [addToQueue]);
+
+  // ── Live queue activity for LAUNCH items ────────────────────────────────────
+  // Keeps queued launch tokens updating with live 5m activity + a short trend, so
+  // you can time the buy inside the narrow window instead of buying blind or late.
+  // Computes a timing signal: hot (accelerating + buy pressure) → fading (rolling over).
+  const queueRef = useRef([]);
+  useEffect(() => { queueRef.current = queue; }, [queue]);
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      const launchItems = queueRef.current.filter(q => q.signal?.type === "LAUNCH");
+      for (const item of launchItems.slice(0, 8)) {
+        const act = await fetchTokenActivity(item.tokenAddress);
+        if (!act) continue;
+        setQueue(prev => prev.map(q => {
+          if (q.id !== item.id) return q;
+          const sample = { ts: Date.now(), price: act.priceUsd, trades: act.trades5m,
+                           buys: act.buys5m, sells: act.sells5m };
+          const trend = [...(q.trend || []), sample].slice(-6);
+          // timing signal from the last two samples + buy pressure
+          const bp = act.trades5m > 0 ? act.buys5m / act.trades5m : 0.5;
+          let timing = "flat";
+          if (trend.length >= 2) {
+            const prev2 = trend[trend.length - 2];
+            const dTrades = sample.trades - prev2.trades;
+            const dPrice  = prev2.price > 0 ? (sample.price - prev2.price) / prev2.price : 0;
+            if (dPrice < -0.05 || bp < 0.45)                 timing = "fading";
+            else if (dTrades > 0 && bp >= 0.55 && dPrice >= 0) timing = "hot";
+            else if (dTrades < 0)                             timing = "cooling";
+          }
+          return { ...q, activity: act, trend, buyPressure: bp, timing,
+                   priceUsd: act.priceUsd || q.priceUsd, lastUpdated: Date.now(),
+                   pairAddressReal: act.pairAddress || q.pairAddressReal };
+        }));
+      }
+    }, 6000);
+    return () => clearInterval(iv);
+  }, []);
   const stats = {
     openCount:   positions.filter(p => p.status === "open").length,
     queueCount:  queue.length,

@@ -521,6 +521,33 @@ function QueueItem({ item, onApprove, onDismiss, executing, connected }) {
             )}
           </div>
 
+          {item.signal?.type === "LAUNCH" && item.activity && (() => {
+            const a = item.activity;
+            const bp = item.buyPressure != null ? Math.round(item.buyPressure * 100) : null;
+            const dSince = item.initPriceUsd > 0
+              ? ((item.priceUsd - item.initPriceUsd) / item.initPriceUsd) * 100 : null;
+            const t = item.trend || [];
+            const arrow = t.length < 2 ? "→"
+              : (t[t.length-1].price > t[t.length-2].price ? "↑"
+              :  t[t.length-1].price < t[t.length-2].price ? "↓" : "→");
+            const tim = item.timing || "flat";
+            const timCol = tim === "hot" ? C.green : tim === "cooling" ? C.warn
+              : tim === "fading" ? C.red : C.muted;
+            return (
+              <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",
+                margin:"5px 0 3px",fontFamily:"var(--font-mono,monospace)",fontSize:"0.62rem"}}>
+                <Badge color={timCol}>{tim.toUpperCase()} {arrow}</Badge>
+                {dSince != null && <span style={{color: dSince >= 0 ? C.green : C.red}}>
+                  {dSince >= 0 ? "+" : ""}{dSince.toFixed(0)}% since queued</span>}
+                <span style={{color:C.muted2}}>5m {a.trades5m}tx</span>
+                {bp != null && <span style={{color: bp >= 55 ? C.green : bp < 45 ? C.red : C.muted2}}>
+                  {bp}% buys</span>}
+                {a.vol5m ? <span style={{color:C.muted}}>${a.vol5m.toFixed(0)} vol</span> : null}
+                {a.liq ? <span style={{color:C.muted}}>${(a.liq/1000).toFixed(1)}k liq</span> : null}
+              </div>
+            );
+          })()}
+
           {!editing ? (
             <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
               {[

@@ -762,12 +762,18 @@ export default function SolScanner() {
     finally { setLoading(false); }
   }, [sortBy, minScore, minLiq, maxAgeH]);
 
-  useEffect(() => { scan(); }, []);
+  // The DexScreener trending scan only powers the legacy PAIRS/NARRATIVES market
+  // view and the deprecated momentum entry. With launch-score entry it's dead weight,
+  // so only run it when entrySource is "momentum" (or the user opens the PAIRS tab).
+  const marketScanOn = (trading.settings.entrySource ?? "launch") === "momentum"
+    || activeTab === "tokens" || activeTab === "metas";
+
+  useEffect(() => { if (marketScanOn) scan(); }, [marketScanOn]);
   useEffect(() => {
     if (timerRef.current) clearInterval(timerRef.current);
-    if (autoRefresh) timerRef.current = setInterval(scan, REFRESH_INTERVAL);
+    if (autoRefresh && marketScanOn) timerRef.current = setInterval(scan, REFRESH_INTERVAL);
     return () => clearInterval(timerRef.current);
-  }, [autoRefresh, scan]);
+  }, [autoRefresh, scan, marketScanOn]);
 
   const displayTokens = selectedMeta ? tokens.filter(t=>(t._metas||[]).some(m=>m.slug===selectedMeta)) : tokens;
   const apexCount = tokens.filter(t=>t._score>=82).length;
