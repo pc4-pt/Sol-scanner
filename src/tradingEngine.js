@@ -465,6 +465,32 @@ export async function getSolUsd() {
   return _solUsd.v || 0;
 }
 
+// ── Live activity / momentum for a token (DexScreener) ────────────────────────
+// Returns 5-minute trade count, price change, volume, liquidity, and the pair
+// address (for inline charts). null until the token is listed with a pool.
+export async function fetchTokenActivity(mint) {
+  try {
+    const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${mint}`);
+    if (!res.ok) return null;
+    const pairs = await res.json();
+    if (!Array.isArray(pairs) || !pairs.length) return null;
+    const p = pairs.sort(
+      (a, b) => parseFloat(b.liquidity?.usd || 0) - parseFloat(a.liquidity?.usd || 0)
+    )[0];
+    const t5 = p.txns?.m5 || {};
+    const buys5m  = parseInt(t5.buys  || 0) || 0;
+    const sells5m = parseInt(t5.sells || 0) || 0;
+    return {
+      pairAddress:   p.pairAddress || null,
+      priceUsd:      parseFloat(p.priceUsd || 0) || 0,
+      priceChange5m: parseFloat(p.priceChange?.m5 ?? 0) || 0,
+      buys5m, sells5m, trades5m: buys5m + sells5m,
+      vol5m:         parseFloat(p.volume?.m5 || 0) || 0,
+      liq:           parseFloat(p.liquidity?.usd || 0) || 0,
+    };
+  } catch { return null; }
+}
+
 // ── PnL helpers ───────────────────────────────────────────────────────────────
 export function calcPnl(position, currentPrice) {
   if (!position.entryPrice || !currentPrice) return null;
@@ -574,6 +600,13 @@ export const DEFAULT_TRADE_SETTINGS = {
   // ahead of graduation.
   confirmWindowSec:   90,         // seconds after creation before eligibility is checked
   probeSol:           0.05,       // nominal SOL size used for the sellability probe
+  // ── Momentum / activity gate — a token must be MOVING, not just sellable ──
+  // Prevents single-trade "eligible" tokens with no real activity. Uses DexScreener
+  // 5-minute trade count / price change. Tokens that are sellable but inactive are
+  // flagged STAGNANT (not queueable); tokens down hard or drained are COLLAPSED.
+  minTrades5m:        4,          // require at least this many trades in the last 5 min
+  minLiqUsd:          400,        // liquidity floor; below this = collapsed/dead
+  collapseDropPct:    40,         // 5-min price drop >= this% = collapsed
   // ── Legacy momentum gates (only used when entrySource === "momentum") ─────
   // DEPRECATED as entry alpha by the sol-early-signal research. Left in place so the
   // momentum view still renders, but they no longer drive entries by default.

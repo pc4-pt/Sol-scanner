@@ -9,7 +9,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
-import { simulateRoundTrip, fetchCurrentPrice } from "./tradingEngine.js";
+import { simulateRoundTrip, fetchTokenActivity } from "./tradingEngine.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -80,54 +80,80 @@ export function createPumpStream({ onLaunch, onMigration, onStatus }) {
   };
 }
 
-// ── Survival validation: at T+window, confirm the token is still alive & sellable ──
-// Uses the same round-trip probe as the pre-buy guard. A token that died in the
-// first minutes will have drained liquidity → no/poor sell route → not eligible.
-// States: pending → checking → eligible | collapsed | no_exit | no_route
-async function validateLaunch(mint, { probeSol = 0.05, slippageBps = 200, minRecovery = 0.7 }) {
-  const lamports = Math.round(probeSol * 1e9);
-  const rt = await simulateRoundTrip({ tokenMint: mint, amountLamports: lamports, slippageBps });
-  if (!rt.sellable) {
-    const noBuy = (rt.reason || "").toLowerCase().includes("buy route");
-    return { state: noBuy ? "no_route" : "no_exit", recovered: 0, at: Date.now() };
+// ── Assess a launch: is it alive, SELLABLE, and actually MOVING? ──────────────
+// Combines the round-trip sellability probe with DexScreener 5-minute activity.
+// States:
+//   eligible  — sellable + active (>= minTrades5m) + not collapsed   → queueable
+//   stagnant  — sellable but little/no activity (e.g. a single trade) → NOT queueable
+//   collapsed — price down hard, liquidity drained, or can't recover  → NOT queueable
+//   no_exit   — no sell route (honeypot)      no_route — not tradeable yet
+// `full` runs the round-trip (sellability); refreshes skip it and reuse `sellable`.
+async function assessLaunch(mint, opts, full, prevSellable) {
+  const { probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct } = opts;
+  const act = await fetchTokenActivity(mint);
+
+  let sellable = prevSellable, recovered = undefined;
+  if (full || prevSellable == null) {
+    const rt = await simulateRoundTrip({
+      tokenMint: mint, amountLamports: Math.round(probeSol * 1e9), slippageBps: 200,
+    });
+    sellable = rt.sellable; recovered = rt.recovered;
+    if (!rt.sellable) {
+      const noBuy = (rt.reason || "").toLowerCase().includes("buy route");
+      return { state: noBuy ? "no_route" : "no_exit", sellable: false, at: Date.now(),
+               ...(act || {}) };
+    }
+    if (rt.recovered < minRecovery) {
+      return { state: "collapsed", sellable: true, recovered, at: Date.now(), ...(act || {}) };
+    }
   }
-  if (rt.recovered < minRecovery) {
-    return { state: "collapsed", recovered: rt.recovered, at: Date.now() };
+
+  const base = { sellable, recovered, at: Date.now(), ...(act || {}) };
+  if (act) {
+    if (act.liq > 0 && act.liq < minLiqUsd) return { state: "collapsed", ...base };
+    if (act.priceChange5m <= -collapseDropPct) return { state: "collapsed", ...base };
+    if (act.trades5m < minTrades5m)           return { state: "stagnant",  ...base };
+    return { state: "eligible", ...base };
   }
-  return { state: "eligible", recovered: rt.recovered, at: Date.now() };
+  // sellable but not yet listed on DexScreener → no observable activity yet
+  return { state: "stagnant", ...base };
 }
 
-// React hook: ranked live launch feed + connection status + creator-history stats.
-// Runs survival validation at confirmWindowSec and tags each launch's eligibility.
+// React hook: ranked live feed + connection status + creator-history stats.
+// Polls activity/eligibility so momentum stays live and stagnant→active transitions surface.
 export function useLaunchStream({
   enabled = true, keep = 80,
   confirmWindowSec = 90, probeSol = 0.05, minRecovery = 0.7,
-  validateMinScore = 40,           // only spend quote calls on launches worth showing
+  minTrades5m = 4, minLiqUsd = 400, collapseDropPct = 40,
+  validateMinScore = 40,
 } = {}) {
   const [launches, setLaunches] = useState([]);
   const [status, setStatus]     = useState("idle");
   const [stats, setStats]       = useState({ creators: 0, grads: 0, mints: 0 });
   const [migrations, setMigrations] = useState(0);
   const engineRef = useRef(null);
-  const validatedRef = useRef(new Set());   // mints already validated (or in-flight)
-  const cfgRef = useRef({ confirmWindowSec, probeSol, minRecovery, validateMinScore });
+  const launchesRef = useRef([]);
+  useEffect(() => { launchesRef.current = launches; }, [launches]);
+  const cfgRef = useRef({});
   useEffect(() => {
-    cfgRef.current = { confirmWindowSec, probeSol, minRecovery, validateMinScore };
-  }, [confirmWindowSec, probeSol, minRecovery, validateMinScore]);
+    cfgRef.current = { confirmWindowSec, probeSol, minRecovery, minTrades5m,
+                       minLiqUsd, collapseDropPct, validateMinScore };
+  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, validateMinScore]);
 
   useEffect(() => {
     if (!enabled) { setStatus("off"); return; }
     const engine = createPumpStream({
       onLaunch: (l) => {
-        setLaunches((prev) => [{ ...l, eligibility: { state: "pending" } }, ...prev].slice(0, keep));
+        setLaunches((prev) => {
+          if (prev.some((x) => x.mint === l.mint)) return prev;   // dedupe by mint
+          return [{ ...l, eligibility: { state: "pending" } }, ...prev].slice(0, keep);
+        });
         setStats(engine.history.stats());
       },
       onMigration: (mg) => {
         setMigrations((n) => n + 1);
         setStats(engine.history.stats());
-        // tag any visible launch for this mint as graduated
-        setLaunches((prev) => prev.map((x) =>
-          x.mint === mg.mint ? { ...x, graduated: true } : x));
+        setLaunches((prev) => prev.map((x) => x.mint === mg.mint ? { ...x, graduated: true } : x));
       },
       onStatus: setStatus,
     });
@@ -136,37 +162,34 @@ export function useLaunchStream({
     return () => engine.close();
   }, [enabled, keep]);
 
-  // Validation loop: every few seconds, validate launches that are past the
-  // confirmation window and not yet checked (bounded per tick to limit API calls).
+  // Polling loop: refresh activity + eligibility for eligible/stagnant/pending
+  // launches past the confirmation window (terminal dead states are left alone).
   useEffect(() => {
     if (!enabled) return;
-    const iv = setInterval(async () => {
-      const { confirmWindowSec, probeSol, minRecovery, validateMinScore } = cfgRef.current;
+    const TERMINAL = new Set(["no_exit", "no_route", "collapsed"]);
+    const iv = setInterval(() => {
+      const c = cfgRef.current;
       const now = Date.now();
-      const due = [];
-      setLaunches((prev) => {
-        for (const l of prev) {
-          if (l.graduated) continue;
-          if ((l.score ?? 0) < validateMinScore) continue;
-          if (validatedRef.current.has(l.mint)) continue;
-          if (now - l.ts >= confirmWindowSec * 1000) due.push(l.mint);
+      const pool = launchesRef.current;
+      const due = pool
+        .filter((l) => !l.graduated
+          && (l.score ?? 0) >= c.validateMinScore
+          && now - l.ts >= c.confirmWindowSec * 1000
+          && !TERMINAL.has(l.eligibility?.state))
+        .sort((a, b) => (a.eligibility?.at || 0) - (b.eligibility?.at || 0)); // stalest first
+      const batch = due.slice(0, 4);
+      for (const l of batch) {
+        const first = !l.eligibility?.at;
+        if (first) {
+          setLaunches((prev) => prev.map((x) =>
+            x.mint === l.mint ? { ...x, eligibility: { ...x.eligibility, state: "checking" } } : x));
         }
-        return prev;
-      });
-      const batch = due.slice(0, 3);                 // cap concurrency per tick
-      for (const mint of batch) {
-        validatedRef.current.add(mint);
-        setLaunches((prev) => prev.map((x) =>
-          x.mint === mint ? { ...x, eligibility: { state: "checking" } } : x));
-        validateLaunch(mint, { probeSol, minRecovery }).then((res) => {
-          setLaunches((prev) => prev.map((x) =>
-            x.mint === mint ? { ...x, eligibility: res } : x));
-        }).catch(() => {
-          setLaunches((prev) => prev.map((x) =>
-            x.mint === mint ? { ...x, eligibility: { state: "no_route" } } : x));
-        });
+        assessLaunch(l.mint, c, first, l.eligibility?.sellable)
+          .then((res) => setLaunches((prev) => prev.map((x) =>
+            x.mint === l.mint ? { ...x, eligibility: res } : x)))
+          .catch(() => {});
       }
-    }, 4000);
+    }, 6000);
     return () => clearInterval(iv);
   }, [enabled]);
 
