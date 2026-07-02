@@ -517,7 +517,29 @@ export function useTrading() {
           const newPeak = Math.max(pos.peakPnlPct || 0, pnl?.pct ?? 0);
           // Build the version of the position used for exit decisions, including fresh peak
           const posForExit = { ...pos, peakPnlPct: newPeak };
-          const exit = shouldTriggerExit(posForExit, price, exitOpts);
+          let exit = shouldTriggerExit(posForExit, price, exitOpts);
+
+          // ── Momentum-fade sell signal (first-minutes rollover) ─────────────
+          // Fetch live 5m activity; a collapse in buy pressure / trades ahead of
+          // price is the earliest exit tell. Always shown; auto-exits only if enabled.
+          let mom = null;
+          try {
+            const act = await fetchTokenActivity(pos.tokenAddress);
+            if (act) {
+              const bp = act.trades5m > 0 ? act.buys5m / act.trades5m : 0.5;
+              const past = Date.now() - (pos.openedAt || Date.now()) > (settings.graceSec ?? 60) * 1000;
+              const rolledOver = (pnl?.pct ?? 0) < (pos.peakPnlPct || 0) - 5;
+              const fadeBP = settings.momentumFadeBuyPressure ?? 0.42;
+              const fading = past && bp < fadeBP && (rolledOver || (act.priceChange5m ?? 0) < 0);
+              mom = {
+                buyPressure: bp, trades5m: act.trades5m, priceChange5m: act.priceChange5m,
+                signal: fading ? "FADING" : bp >= 0.55 ? "STRONG" : "OK",
+              };
+              if (fading && (settings.momentumAutoExit ?? false) && !exit) {
+                exit = { reason: "MOMENTUM_FADE" };
+              }
+            }
+          } catch { /* activity is best-effort */ }
 
           setPositions(prev => prev.map(p =>
             p.id === pos.id
@@ -527,6 +549,7 @@ export function useTrading() {
                   pnlPct:       pnl?.pct ?? p.pnlPct,
                   pnlSol:       pnl?.solPnl ?? p.pnlSol,
                   peakPnlPct:   Math.max(p.peakPnlPct || 0, pnl?.pct ?? 0),
+                  momentum:     mom || p.momentum,
                 }
               : p
           ));

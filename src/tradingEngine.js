@@ -633,6 +633,9 @@ export const DEFAULT_TRADE_SETTINGS = {
   trailingEnabled:    true,       // disable fixed TP once trailing activates
   trailingActivateAt: 30,         // start trailing once position is up this %
   trailDrawdownPct:   15,         // exit when peak drops by this %
+  // ── Momentum-fade sell signal (first-minutes rollover) ───────────────────
+  momentumAutoExit:       false,  // false = show the FADING signal only; true = auto-sell on fade
+  momentumFadeBuyPressure: 0.42,  // buy pressure below this (with rollover) = fading
   // ── Notifications — KEPT ─────────────────────────────────────────────────
   notifyBrowser:      true,       // push notifications when tab is backgrounded
   notifySound:        true,       // play tone for queue/fill/exit/error events

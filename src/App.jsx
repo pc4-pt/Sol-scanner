@@ -766,7 +766,7 @@ export default function SolScanner() {
   // view and the deprecated momentum entry. With launch-score entry it's dead weight,
   // so only run it when entrySource is "momentum" (or the user opens the PAIRS tab).
   const marketScanOn = (trading.settings.entrySource ?? "launch") === "momentum"
-    || activeTab === "tokens" || activeTab === "metas";
+    || activeTab === "tokens";
 
   useEffect(() => { if (marketScanOn) scan(); }, [marketScanOn]);
   useEffect(() => {
@@ -933,7 +933,7 @@ export default function SolScanner() {
 
         {/* ── TABS ── */}
         <div style={{ display: "flex", gap: 0, marginBottom: 0, borderBottom: "1px solid var(--border)" }}>
-          {[["launches","◆ LAUNCHES (t=0)"],["tokens",`PAIRS (${displayTokens.length})`],["metas",`NARRATIVES (${metas.length})`],["filters","FILTERS"]].map(([id,label]) => (
+          {[["launches","◆ LAUNCHES (t=0)"],["tokens",`PAIRS (${displayTokens.length})`],["filters","FILTERS"]].map(([id,label]) => (
             <button key={id} onClick={() => setActiveTab(id)} style={{
               padding: "9px 16px", background: "none", border: "none",
               borderBottom: `2px solid ${activeTab===id?"var(--accent)":"transparent"}`,
@@ -955,23 +955,6 @@ export default function SolScanner() {
 
         {/* ── LAUNCHES TAB (t=0 launch-score feed — the leading-signal entry brain) ── */}
         {activeTab === "launches" && <LaunchFeed trading={trading} />}
-
-        {/* ── NARRATIVES TAB ── */}
-        {activeTab === "metas" && (
-          <div style={{ paddingTop: 16, animation: "fadeIn 0.2s ease" }}>
-            <p style={{ fontSize: "0.68rem", color: "var(--muted2)", marginBottom: 14, lineHeight: 1.6 }}>
-              Trending narrative categories from DexScreener. Click any to filter the pairs list. Hot narratives add bonus score to tokens within them.
-            </p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px,1fr))", gap: 8 }}>
-              {[...metas].sort((a,b)=>(b.marketCapChange?.h1||0)-(a.marketCapChange?.h1||0)).map(meta=>(
-                <MetaCard key={meta.slug} meta={meta} onSelect={setSelectedMeta} selected={selectedMeta} />
-              ))}
-            </div>
-            {metas.length===0&&!loading&&(
-              <p style={{ textAlign:"center", padding:40, color:"var(--muted)", fontSize:"0.75rem" }}>No meta data — run a scan first</p>
-            )}
-          </div>
-        )}
 
         {/* ── FILTERS TAB ── */}
         {activeTab === "filters" && (

@@ -185,8 +185,20 @@ export function useLaunchStream({
             x.mint === l.mint ? { ...x, eligibility: { ...x.eligibility, state: "checking" } } : x));
         }
         assessLaunch(l.mint, c, first, l.eligibility?.sellable)
-          .then((res) => setLaunches((prev) => prev.map((x) =>
-            x.mint === l.mint ? { ...x, eligibility: res } : x)))
+          .then((res) => setLaunches((prev) => prev.map((x) => {
+            if (x.mint !== l.mint) return x;
+            // buy-timing from this poll vs the previous one
+            const old = x.eligibility || {};
+            const bp = res.trades5m > 0 ? res.buys5m / res.trades5m : 0.5;
+            let timing = "flat";
+            if (old.trades5m != null && res.trades5m != null) {
+              const dTrades = res.trades5m - old.trades5m;
+              if ((res.priceChange5m ?? 0) <= -5 || bp < 0.45) timing = "fading";
+              else if (dTrades > 0 && bp >= 0.55 && (res.priceChange5m ?? 0) >= 0) timing = "hot";
+              else if (dTrades < 0) timing = "cooling";
+            }
+            return { ...x, eligibility: { ...res, timing, buyPressure: bp } };
+          })))
           .catch(() => {});
       }
     }, 6000);

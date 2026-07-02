@@ -161,7 +161,13 @@ export function LaunchFeed({ trading }) {
                 {hasAct
                   ? <><span style={{ color: pcColor }}>{fmtPct(pc)} 5m</span>
                       <span style={{ color: "var(--muted)" }}> · {el.trades5m}tx</span>
-                      {el.vol5m ? <span style={{ color: "var(--muted)" }}> · ${el.vol5m.toFixed(0)}</span> : null}</>
+                      {el.buyPressure != null && <span style={{
+                        color: el.buyPressure >= 0.55 ? "#00e5c3" : el.buyPressure < 0.45 ? "#ff3860" : "var(--muted)" }}>
+                        {" · "}{Math.round(el.buyPressure*100)}%buys</span>}
+                      {el.state === "eligible" && el.timing && el.timing !== "flat" && <span style={{
+                        color: el.timing === "hot" ? "#00e5c3" : el.timing === "fading" ? "#ff3860" : "#f0a500",
+                        fontWeight: 700 }}>{" · "}{el.timing === "hot" ? "▲HOT" : el.timing === "fading" ? "▼FADING" : "•COOLING"}</span>}
+                    </>
                   : <span style={{ color: "var(--muted)" }}>{new Date(l.ts).toLocaleTimeString()}</span>}
               </div>
             </div>

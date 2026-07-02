@@ -651,6 +651,13 @@ function PositionCard({ position, onSell, onRetry, onAbandon, executing, connect
             <div style={{width:3,height:14,borderRadius:1,background:pnlColor,boxShadow:`0 0 5px ${pnlColor}`}}/>
             <Mono color={C.text} size="0.88rem" weight={700}>{position.symbol}</Mono>
             {isGraduated(position.tokenAddress) && <Badge color="#00e5c3">◆ GRADUATED</Badge>}
+            {position.momentum && (() => {
+              const m = position.momentum;
+              const col = m.signal === "FADING" ? C.red : m.signal === "STRONG" ? C.green : C.muted;
+              const tag = m.signal === "FADING" ? "▼ FADING — buyers gone"
+                : m.signal === "STRONG" ? "▲ buyers strong" : "• steady";
+              return <Badge color={col} title={`5m ${m.trades5m}tx · ${Math.round((m.buyPressure||0)*100)}% buys`}>{tag}</Badge>;
+            })()}
             <Badge color={C.muted}>{age}m open</Badge>
             {position.entrySignal&&<Badge color={position.entrySignal.color}>{position.entrySignal.type}</Badge>}
             {isStuck && <Badge color={C.red}>🚫 STUCK</Badge>}
