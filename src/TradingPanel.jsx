@@ -71,12 +71,27 @@ function PnlBadge({ pct, sol }) {
 }
 
 // ── Wallet bar ────────────────────────────────────────────────────────────────
-function WalletBar({ connected, walletAddress, solBalance }) {
+function WalletBar({ connected, walletAddress, solBalance, burner }) {
   const { setVisible } = useWalletModal();
   const short = walletAddress
     ? walletAddress.slice(0,4)+"…"+walletAddress.slice(-4)
     : null;
+  const burnerActive = burner?.active;
+  const burnerShort = burner?.address
+    ? burner.address.slice(0,4)+"…"+burner.address.slice(-4) : null;
   return (
+    <div style={{display:"flex",flexDirection:"column",gap:0}}>
+    {burnerActive && (
+      <div style={{display:"flex",alignItems:"center",gap:8,padding:"7px 14px",
+        background:"#7c5cff18",borderBottom:`1px solid ${C.border}`}}>
+        <span style={{fontSize:"0.62rem",color:"#b8a5ff",fontFamily:C.mono,fontWeight:700}}>⚡ BURNER (trades sign here)</span>
+        <Mono color={C.text} size="0.68rem">{burnerShort}</Mono>
+        <div style={{width:1,height:12,background:C.border}}/>
+        <Mono color={C.accent} size="0.68rem" weight={600}>
+          {burner.balance!=null?`${burner.balance.toFixed(4)} SOL`:"…"}
+        </Mono>
+      </div>
+    )}
     <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 14px",
       background:C.surface2,borderBottom:`1px solid ${C.border}`}}>
       <div style={{width:7,height:7,borderRadius:"50%",
@@ -94,10 +109,12 @@ function WalletBar({ connected, walletAddress, solBalance }) {
         </>
       ) : (
         <>
-          <span style={{fontSize:"0.68rem",color:C.muted2,flex:1}}>No wallet connected</span>
+          <span style={{fontSize:"0.68rem",color:C.muted2,flex:1}}>
+            {burnerActive ? "Phantom not connected (burner will trade)" : "No wallet connected"}</span>
           <Btn size="sm" variant="primary" onClick={()=>setVisible(true)}>CONNECT WALLET</Btn>
         </>
       )}
+    </div>
     </div>
   );
 }
@@ -811,7 +828,7 @@ export function TradingPanel({ trading, solBalance }) {
     executeBuy, executeSell,
     removeFromQueue, clearQueue,
     retryPosition, abandonPosition,
-    stats, connected, walletAddress,
+    stats, connected, canTrade, tradingAddress, walletAddress,
   } = trading;
 
   const tabs = [
@@ -833,7 +850,7 @@ export function TradingPanel({ trading, solBalance }) {
         input:focus{outline:none}
       `}</style>
 
-      <WalletBar connected={connected} walletAddress={walletAddress} solBalance={solBalance}/>
+      <WalletBar connected={connected} walletAddress={walletAddress} solBalance={solBalance} burner={trading.burner}/>
       <StatsBar stats={stats}/>
 
       {/* Tab bar */}
@@ -930,7 +947,7 @@ export function TradingPanel({ trading, solBalance }) {
               {queue.map(item=>(
                 <QueueItem key={item.id} item={item}
                   onApprove={executeBuy} onDismiss={removeFromQueue}
-                  executing={executing} connected={connected}/>
+                  executing={executing} connected={canTrade}/>
               ))}
             </>
           )
@@ -952,7 +969,7 @@ export function TradingPanel({ trading, solBalance }) {
                   onSell={executeSell}
                   onRetry={retryPosition}
                   onAbandon={abandonPosition}
-                  executing={executing} connected={connected}/>
+                  executing={executing} connected={canTrade}/>
               ))}
             </>
           )

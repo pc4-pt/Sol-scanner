@@ -883,6 +883,8 @@ export function useTrading() {
     checkAndQueue,
     stats,
     connected,
+    canTrade: effConnected,
+    tradingAddress: effPublicKey?.toString?.() || null,
     walletAddress: publicKey?.toString(),
   };
 }
