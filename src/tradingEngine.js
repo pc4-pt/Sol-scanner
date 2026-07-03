@@ -53,21 +53,61 @@ export async function getTokenBalance(connection, ownerPubkey, tokenMint) {
 // swapMode: "ExactIn" (default) is more forgiving on volatile tokens than ExactOut.
 // For sells we always want ExactIn so we can specify "sell this many tokens" and
 // accept whatever SOL we get back, rather than locking a target SOL amount.
-export async function getQuote({ inputMint, outputMint, amountLamports, slippageBps = 200, swapMode = "ExactIn" }) {
-  const params = new URLSearchParams({
-    inputMint,
-    outputMint,
-    amount:           String(amountLamports),
-    slippageBps:      String(slippageBps),
-    swapMode,
-    onlyDirectRoutes: "false",
-  });
+// ── Jupiter quote rate limiter + priority queue ───────────────────────────────
+// All quotes funnel through here so background probing (survival checks, pre-buy,
+// queue activity) can't starve trade execution and trip 429s. Execution quotes are
+// HIGH priority (jump the queue, retry hard through rate limits); background probes
+// are LOW priority, yield to execution, and are dropped if the backlog gets large.
+const _jupQ = { high: [], low: [] };
+let _jupBusy = false, _jupLast = 0;
+const JUP_MIN_INTERVAL = 400;   // ms between Jupiter calls (~2.5/s)
+const JUP_LOW_CAP = 25;         // max queued background probes; oldest dropped beyond this
 
-  const res  = await fetch(`/api/quote?${params.toString()}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(`Jupiter quote failed (${res.status}): ${data?.error || JSON.stringify(data)}`);
-  if (data.error) throw new Error(`Jupiter quote error: ${data.error}`);
-  return data;
+function _drainJup() {
+  if (_jupBusy) return;
+  const job = _jupQ.high.shift() || _jupQ.low.shift();
+  if (!job) return;
+  _jupBusy = true;
+  const wait = Math.max(0, JUP_MIN_INTERVAL - (Date.now() - _jupLast));
+  setTimeout(async () => {
+    _jupLast = Date.now();
+    try { job.resolve(await job.fn()); } catch (e) { job.reject(e); }
+    finally { _jupBusy = false; _drainJup(); }
+  }, wait);
+}
+function _enqueueJup(fn, priority) {
+  return new Promise((resolve, reject) => {
+    const q = _jupQ[priority];
+    q.push({ fn, resolve, reject });
+    if (priority === "low" && q.length > JUP_LOW_CAP) {
+      const dropped = q.shift();
+      dropped.reject(new Error("dropped (rate-limit backlog)"));
+    }
+    _drainJup();
+  });
+}
+async function _rawQuote(params, retries) {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`/api/quote?${params.toString()}`);
+    if (res.status === 429) {
+      if (attempt >= retries) throw new Error(`Jupiter quote failed (429): rate limited`);
+      await new Promise(r => setTimeout(r, 500 * (2 ** attempt)));
+      continue;
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(`Jupiter quote failed (${res.status}): ${data?.error || JSON.stringify(data)}`);
+    if (data.error) throw new Error(`Jupiter quote error: ${data.error}`);
+    return data;
+  }
+}
+
+export async function getQuote({ inputMint, outputMint, amountLamports, slippageBps = 200, swapMode = "ExactIn", priority = "low" }) {
+  const params = new URLSearchParams({
+    inputMint, outputMint, amount: String(amountLamports),
+    slippageBps: String(slippageBps), swapMode, onlyDirectRoutes: "false",
+  });
+  const retries = priority === "high" ? 4 : 1;
+  return _enqueueJup(() => _rawQuote(params, retries), priority);
 }
 
 // ── Sustained-momentum timing ─────────────────────────────────────────────────
@@ -293,7 +333,7 @@ export async function executeBuySwap({
   inputMint, outputMint, amountLamports,
   slippageBps, publicKey, signTransaction, connection,
 }) {
-  const quote = await getQuote({ inputMint, outputMint, amountLamports, slippageBps });
+  const quote = await getQuote({ inputMint, outputMint, amountLamports, slippageBps, priority: "high" });
 
   const priceImpact = parseFloat(quote.priceImpactPct || 0);
   if (priceImpact > 5) {
@@ -367,6 +407,7 @@ export async function executeSellSwap({
       amountLamports: sellAmount,
       slippageBps:    bps,
       swapMode:       "ExactIn",
+      priority:       "high",
     });
 
     const swapTxBase64 = await getSwapTransaction({
