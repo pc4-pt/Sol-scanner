@@ -530,13 +530,16 @@ function QueueItem({ item, onApprove, onDismiss, executing, connected }) {
             const arrow = t.length < 2 ? "→"
               : (t[t.length-1].price > t[t.length-2].price ? "↑"
               :  t[t.length-1].price < t[t.length-2].price ? "↓" : "→");
-            const tim = item.timing || "flat";
-            const timCol = tim === "hot" ? C.green : tim === "cooling" ? C.warn
-              : tim === "fading" ? C.red : C.muted;
+            const tim = item.timing || "building";
+            const timMap = {
+              sustained: [C.green, "SUSTAINED"], steady: ["#b8f542", "STEADY"],
+              cooling: [C.warn, "COOLING"], fading: [C.red, "FADING"], building: [C.muted, "BUILDING"],
+            };
+            const [timCol, timLbl] = timMap[tim] || [C.muted, "BUILDING"];
             return (
               <div style={{display:"flex",gap:12,alignItems:"center",flexWrap:"wrap",
                 margin:"5px 0 3px",fontFamily:"var(--font-mono,monospace)",fontSize:"0.62rem"}}>
-                <Badge color={timCol}>{tim.toUpperCase()} {arrow}</Badge>
+                <Badge color={timCol}>{timLbl} {arrow}</Badge>
                 {dSince != null && <span style={{color: dSince >= 0 ? C.green : C.red}}>
                   {dSince >= 0 ? "+" : ""}{dSince.toFixed(0)}% since queued</span>}
                 <span style={{color:C.muted2}}>5m {a.trades5m}tx</span>

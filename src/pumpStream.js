@@ -9,7 +9,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
-import { simulateRoundTrip, fetchTokenActivity } from "./tradingEngine.js";
+import { simulateRoundTrip, fetchTokenActivity, computeTiming } from "./tradingEngine.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -125,6 +125,7 @@ export function useLaunchStream({
   enabled = true, keep = 80,
   confirmWindowSec = 90, probeSol = 0.05, minRecovery = 0.7,
   minTrades5m = 4, minLiqUsd = 400, collapseDropPct = 40,
+  sustainSec = 90, minSamples = 4,
   validateMinScore = 40,
 } = {}) {
   const [launches, setLaunches] = useState([]);
@@ -137,8 +138,8 @@ export function useLaunchStream({
   const cfgRef = useRef({});
   useEffect(() => {
     cfgRef.current = { confirmWindowSec, probeSol, minRecovery, minTrades5m,
-                       minLiqUsd, collapseDropPct, validateMinScore };
-  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, validateMinScore]);
+                       minLiqUsd, collapseDropPct, sustainSec, minSamples, validateMinScore };
+  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, validateMinScore]);
 
   useEffect(() => {
     if (!enabled) { setStatus("off"); return; }
@@ -187,17 +188,15 @@ export function useLaunchStream({
         assessLaunch(l.mint, c, first, l.eligibility?.sellable)
           .then((res) => setLaunches((prev) => prev.map((x) => {
             if (x.mint !== l.mint) return x;
-            // buy-timing from this poll vs the previous one
-            const old = x.eligibility || {};
+            // maintain a trend buffer (last ~20 samples ≈ 2 min at 6s polls)
             const bp = res.trades5m > 0 ? res.buys5m / res.trades5m : 0.5;
-            let timing = "flat";
-            if (old.trades5m != null && res.trades5m != null) {
-              const dTrades = res.trades5m - old.trades5m;
-              if ((res.priceChange5m ?? 0) <= -5 || bp < 0.45) timing = "fading";
-              else if (dTrades > 0 && bp >= 0.55 && (res.priceChange5m ?? 0) >= 0) timing = "hot";
-              else if (dTrades < 0) timing = "cooling";
-            }
-            return { ...x, eligibility: { ...res, timing, buyPressure: bp } };
+            const sample = { ts: Date.now(), price: res.priceUsd ?? 0,
+                             trades: res.trades5m ?? 0, buys: res.buys5m ?? 0, sells: res.sells5m ?? 0 };
+            const trend = [...(x.trend || []), sample].slice(-20);
+            const timing = res.trades5m != null
+              ? computeTiming(trend, { sustainSec: c.sustainSec, minSamples: c.minSamples })
+              : "building";
+            return { ...x, trend, eligibility: { ...res, timing, buyPressure: bp } };
           })))
           .catch(() => {});
       }

@@ -3,11 +3,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
   executeBuySwap, executeSellSwap,
-  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd, simulateRoundTrip, fetchTokenActivity,
+  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd, simulateRoundTrip, fetchTokenActivity, computeTiming,
   computeAdaptiveStopLoss,
   DEFAULT_TRADE_SETTINGS, SOL_MINT, PRICE_POLL_MS,
 } from "./tradingEngine.js";
 import { checkTokenSafety } from "./safety.js";
+import { useBurner } from "./burnerWallet.js";
 import { fireNotification } from "./notifications.js";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -73,6 +74,13 @@ export function sortQueue(queue, sortBy) {
 export function useTrading() {
   const { publicKey, signTransaction, connected } = useWallet();
   const { connection } = useConnection();
+
+  // Optional burner wallet: when active, it signs locally (no popup) and becomes
+  // the effective signer for all trades. Falls back to the connected Phantom wallet.
+  const burner = useBurner(connection);
+  const effPublicKey     = burner.active ? burner.publicKey     : publicKey;
+  const effSignTransaction = burner.active ? burner.signTransaction : signTransaction;
+  const effConnected     = burner.active ? !!burner.publicKey   : connected;
 
   const [settings,      setSettings]  = useState(() => load(KEYS.settings,  DEFAULT_TRADE_SETTINGS));
   const [queue,         setQueue]     = useState([]);
@@ -264,7 +272,7 @@ export function useTrading() {
 
   // ── Execute buy ───────────────────────────────────────────────────────────
   const executeBuy = useCallback(async (queueItem) => {
-    if (!connected || !publicKey || !signTransaction) {
+    if (!effConnected || !effPublicKey || !effSignTransaction) {
       notify("Wallet not connected — please connect Phantom or Solflare", "error");
       return;
     }
@@ -321,8 +329,8 @@ export function useTrading() {
         outputMint:     queueItem.tokenAddress,
         amountLamports: lamports,
         slippageBps:    settings.slippageBps,
-        publicKey,
-        signTransaction,
+        publicKey: effPublicKey,
+        signTransaction: effSignTransaction,
         connection,
       });
 
@@ -399,11 +407,11 @@ export function useTrading() {
       setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
       buyFiringRef.current.delete(queueItem.id);
     }
-  }, [connected, publicKey, signTransaction, connection, positions, settings, notify]);
+  }, [effConnected, effPublicKey, effSignTransaction, connection, positions, settings, notify]);
 
   // ── Execute sell ──────────────────────────────────────────────────────────
   const executeSell = useCallback(async (position, reason = "MANUAL") => {
-    if (!connected || !publicKey || !signTransaction) {
+    if (!effConnected || !effPublicKey || !effSignTransaction) {
       notify("Wallet not connected", "error");
       return;
     }
@@ -427,8 +435,8 @@ export function useTrading() {
         tokenMint:      position.tokenAddress,
         tokenAmount:    position.tokensReceived,
         slippageBps:    settings.slippageBps,
-        publicKey,
-        signTransaction,
+        publicKey: effPublicKey,
+        signTransaction: effSignTransaction,
         connection,
       });
 
@@ -487,7 +495,7 @@ export function useTrading() {
       setExecuting(prev => ({ ...prev, [position.id]: false }));
       sellFiringRef.current.delete(position.id);
     }
-  }, [connected, publicKey, signTransaction, connection, settings, notify]);
+  }, [effConnected, effPublicKey, effSignTransaction, connection, settings, notify]);
 
   // ── Price monitor (15s interval) ──────────────────────────────────────────
   // Uses positionsRef (not positions state) to avoid stale closures and
@@ -523,19 +531,24 @@ export function useTrading() {
           // Fetch live 5m activity; a collapse in buy pressure / trades ahead of
           // price is the earliest exit tell. Always shown; auto-exits only if enabled.
           let mom = null;
+          let momTrend = pos.momTrend || [];
           try {
             const act = await fetchTokenActivity(pos.tokenAddress);
             if (act) {
               const bp = act.trades5m > 0 ? act.buys5m / act.trades5m : 0.5;
+              momTrend = [...momTrend, { ts: Date.now(), price: act.priceUsd,
+                trades: act.trades5m, buys: act.buys5m, sells: act.sells5m }].slice(-20);
+              const timing = computeTiming(momTrend, {
+                sustainSec: settings.sustainWindowSec ?? 90,
+                minSamples: settings.minMomentumSamples ?? 4,
+              });
               const past = Date.now() - (pos.openedAt || Date.now()) > (settings.graceSec ?? 60) * 1000;
-              const rolledOver = (pnl?.pct ?? 0) < (pos.peakPnlPct || 0) - 5;
-              const fadeBP = settings.momentumFadeBuyPressure ?? 0.42;
-              const fading = past && bp < fadeBP && (rolledOver || (act.priceChange5m ?? 0) < 0);
               mom = {
-                buyPressure: bp, trades5m: act.trades5m, priceChange5m: act.priceChange5m,
-                signal: fading ? "FADING" : bp >= 0.55 ? "STRONG" : "OK",
+                buyPressure: bp, trades5m: act.trades5m, priceChange5m: act.priceChange5m, timing,
+                signal: timing === "fading" ? "FADING" : bp >= 0.55 ? "STRONG" : "OK",
               };
-              if (fading && (settings.momentumAutoExit ?? false) && !exit) {
+              // Auto-exit only on SUSTAINED fade (windowed), never a single dip.
+              if (timing === "fading" && past && (settings.momentumAutoExit ?? false) && !exit) {
                 exit = { reason: "MOMENTUM_FADE" };
               }
             }
@@ -550,6 +563,7 @@ export function useTrading() {
                   pnlSol:       pnl?.solPnl ?? p.pnlSol,
                   peakPnlPct:   Math.max(p.peakPnlPct || 0, pnl?.pct ?? 0),
                   momentum:     mom || p.momentum,
+                  momTrend,
                 }
               : p
           ));
@@ -827,18 +841,12 @@ export function useTrading() {
           if (q.id !== item.id) return q;
           const sample = { ts: Date.now(), price: act.priceUsd, trades: act.trades5m,
                            buys: act.buys5m, sells: act.sells5m };
-          const trend = [...(q.trend || []), sample].slice(-6);
-          // timing signal from the last two samples + buy pressure
+          const trend = [...(q.trend || []), sample].slice(-20);
           const bp = act.trades5m > 0 ? act.buys5m / act.trades5m : 0.5;
-          let timing = "flat";
-          if (trend.length >= 2) {
-            const prev2 = trend[trend.length - 2];
-            const dTrades = sample.trades - prev2.trades;
-            const dPrice  = prev2.price > 0 ? (sample.price - prev2.price) / prev2.price : 0;
-            if (dPrice < -0.05 || bp < 0.45)                 timing = "fading";
-            else if (dTrades > 0 && bp >= 0.55 && dPrice >= 0) timing = "hot";
-            else if (dTrades < 0)                             timing = "cooling";
-          }
+          const timing = computeTiming(trend, {
+            sustainSec: settingsRef.current.sustainWindowSec ?? 90,
+            minSamples: settingsRef.current.minMomentumSamples ?? 4,
+          });
           return { ...q, activity: act, trend, buyPressure: bp, timing,
                    priceUsd: act.priceUsd || q.priceUsd, lastUpdated: Date.now(),
                    pairAddressReal: act.pairAddress || q.pairAddressReal };
@@ -866,6 +874,7 @@ export function useTrading() {
     queueSort, setQueueSort,
     addToQueue, removeFromQueue, updateQueueItem, clearQueue,
     addLaunchToQueue,
+    burner,
     retryPosition, abandonPosition,
     positions, history,
     executing,

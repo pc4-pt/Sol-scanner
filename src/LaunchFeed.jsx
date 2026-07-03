@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useLaunchStream } from "./pumpStream.js";
 import { MODEL_INFO } from "./launchScore.js";
+import { BurnerWallet } from "./BurnerWallet.jsx";
 
 const scoreColor = (s) =>
   s >= 70 ? "#00e5c3" : s >= 55 ? "#b8f542" : s >= 40 ? "#f0a500" : "#64748b";
@@ -51,6 +52,8 @@ export function LaunchFeed({ trading }) {
     minTrades5m: s.minTrades5m ?? 4,
     minLiqUsd: s.minLiqUsd ?? 400,
     collapseDropPct: s.collapseDropPct ?? 40,
+    sustainSec: s.sustainWindowSec ?? 90,
+    minSamples: s.minMomentumSamples ?? 4,
     validateMinScore: Math.min(minScore, s.minExecScore ?? 68),
   });
 
@@ -70,7 +73,8 @@ export function LaunchFeed({ trading }) {
     const millN   = s.millMinLaunches ?? 5;
     for (const l of launches) {
       if (seen.current.has(l.mint)) continue;
-      if (l.eligibility?.state !== "eligible") continue;   // survival gate
+      if (l.eligibility?.state !== "eligible") continue;         // survival gate
+      if (l.eligibility?.timing !== "sustained") continue;       // sustained-momentum gate
       if (l.score < minExec) continue;
       if ((l.devSol ?? 0) < minDev) continue;
       if (s.blockTokenMills && l.priorCount >= millN && (l.priorGrads ?? 0) === 0) continue;
@@ -125,6 +129,7 @@ export function LaunchFeed({ trading }) {
           fontFamily: "var(--font-mono)" }}>
           {s.autoExecute ? "● AUTO-EXECUTE ON (real buys)" : "○ manual buy (paper-safe)"}
         </span>
+        <BurnerWallet trading={trading} />
       </div>
 
       {/* feed */}
@@ -164,9 +169,14 @@ export function LaunchFeed({ trading }) {
                       {el.buyPressure != null && <span style={{
                         color: el.buyPressure >= 0.55 ? "#00e5c3" : el.buyPressure < 0.45 ? "#ff3860" : "var(--muted)" }}>
                         {" · "}{Math.round(el.buyPressure*100)}%buys</span>}
-                      {el.state === "eligible" && el.timing && el.timing !== "flat" && <span style={{
-                        color: el.timing === "hot" ? "#00e5c3" : el.timing === "fading" ? "#ff3860" : "#f0a500",
-                        fontWeight: 700 }}>{" · "}{el.timing === "hot" ? "▲HOT" : el.timing === "fading" ? "▼FADING" : "•COOLING"}</span>}
+                      {el.state === "eligible" && el.timing && el.timing !== "building" && (() => {
+                        const map = {
+                          sustained: ["#00e5c3", "▲SUSTAINED"], steady: ["#b8f542", "•STEADY"],
+                          cooling: ["#f0a500", "•COOLING"], fading: ["#ff3860", "▼FADING"],
+                        };
+                        const [c2, lbl] = map[el.timing] || ["var(--muted)", ""];
+                        return lbl ? <span style={{ color: c2, fontWeight: 700 }}>{" · "}{lbl}</span> : null;
+                      })()}
                     </>
                   : <span style={{ color: "var(--muted)" }}>{new Date(l.ts).toLocaleTimeString()}</span>}
               </div>

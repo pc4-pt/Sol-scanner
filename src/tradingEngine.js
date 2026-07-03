@@ -70,6 +70,34 @@ export async function getQuote({ inputMint, outputMint, amountLamports, slippage
   return data;
 }
 
+// ── Sustained-momentum timing ─────────────────────────────────────────────────
+// The first-seconds HOT flash is bot churn and un-catchable by a human. This judges
+// momentum SUSTAINED across a window of samples instead of an instantaneous spike,
+// so a "sustained" tag means the token has held buy pressure and price for long
+// enough that a manual entry a few seconds later still lands in the move.
+//   building — not enough history yet
+//   sustained — held buy pressure + non-negative price across the window (ACTIONABLE)
+//   steady   — positive but not strongly sustained
+//   cooling  — activity tailing off
+//   fading   — buy pressure gone or price rolling over
+export function computeTiming(trend, {
+  sustainSec = 90, minSamples = 4, upBP = 0.55, downBP = 0.45,
+} = {}) {
+  if (!trend || trend.length < minSamples) return "building";
+  const last = trend[trend.length - 1];
+  const recent = trend.filter((s) => last.ts - s.ts <= sustainSec * 1000);
+  const w = recent.length >= minSamples ? recent : trend.slice(-minSamples);
+  const bpOf = (s) => (s.trades > 0 ? s.buys / s.trades : 0.5);
+  const avgBP = w.reduce((a, s) => a + bpOf(s), 0) / w.length;
+  const priceChg = w[0].price > 0 ? (last.price - w[0].price) / w[0].price : 0;
+  const tradesTrend = last.trades - w[0].trades;
+  const span = last.ts - w[0].ts;
+  if (avgBP < downBP || priceChg < -0.05) return "fading";
+  if (avgBP >= upBP && priceChg >= 0 && span >= sustainSec * 1000 * 0.6) return "sustained";
+  if (tradesTrend < 0) return "cooling";
+  return "steady";
+}
+
 // ── Honeypot / dead-liquidity guard: simulate a full round trip ───────────────
 // Quotes SOL->token then token->SOL for the tokens we'd receive, WITHOUT signing
 // anything. If the sell leg has no route the token can't be sold (honeypot / dead
@@ -634,8 +662,13 @@ export const DEFAULT_TRADE_SETTINGS = {
   trailingActivateAt: 30,         // start trailing once position is up this %
   trailDrawdownPct:   15,         // exit when peak drops by this %
   // ── Momentum-fade sell signal (first-minutes rollover) ───────────────────
-  momentumAutoExit:       false,  // false = show the FADING signal only; true = auto-sell on fade
+  momentumAutoExit:       false,  // false = show the FADING signal only; true = auto-sell on sustained fade
   momentumFadeBuyPressure: 0.42,  // buy pressure below this (with rollover) = fading
+  // ── Sustained-momentum timing (not the un-catchable first-seconds flash) ──
+  // Momentum must HOLD across this window to read "sustained" — the human-actionable
+  // signal, since a manual entry a few seconds late still lands in a sustained move.
+  sustainWindowSec:   90,         // momentum must hold this long to count as sustained
+  minMomentumSamples: 4,          // minimum activity samples before judging timing
   // ── Notifications — KEPT ─────────────────────────────────────────────────
   notifyBrowser:      true,       // push notifications when tab is backgrounded
   notifySound:        true,       // play tone for queue/fill/exit/error events
