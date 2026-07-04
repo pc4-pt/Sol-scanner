@@ -30,10 +30,14 @@ function save() { try { localStorage.setItem(KEY, JSON.stringify(cache)); } catc
 export function logMilestone(mint, symbol, milestone, data = {}) {
   if (!mint) return;
   const db = load();
-  if (!db[mint]) db[mint] = { mint, symbol: symbol || "?", events: {}, data: {} };
+  if (!db[mint]) db[mint] = { mint, symbol: symbol || "?", events: {}, prices: {}, data: {} };
+  if (!db[mint].prices) db[mint].prices = {};
   if (symbol && db[mint].symbol === "?") db[mint].symbol = symbol;
-  // record the FIRST time each milestone happens (peak updates allowed)
-  if (db[mint].events[milestone] == null) db[mint].events[milestone] = Date.now();
+  // record the FIRST time each milestone happens, with the price at that moment
+  if (db[mint].events[milestone] == null) {
+    db[mint].events[milestone] = Date.now();
+    if (data.price != null && db[mint].prices[milestone] == null) db[mint].prices[milestone] = data.price;
+  }
   Object.assign(db[mint].data, data);
   // cap total tracked tokens
   const keys = Object.keys(db);
@@ -44,10 +48,12 @@ export function logMilestone(mint, symbol, milestone, data = {}) {
 export function getLog() { return Object.values(load()); }
 export function clearLog() { cache = {}; save(); }
 
-// Derived per-token row (seconds between milestones)
+// Derived per-token row (seconds between milestones + price moves between them)
 export function deriveRow(t) {
   const e = t.events || {};
+  const p = t.prices || {};
   const s = (a, b) => (e[a] != null && e[b] != null ? (e[b] - e[a]) / 1000 : null);
+  const mv = (a, b) => (p[a] > 0 && p[b] != null ? ((p[b] - p[a]) / p[a]) * 100 : null);
   return {
     symbol: t.symbol, mint: t.mint,
     score: t.data?.score ?? "", devSol: t.data?.devSol ?? "",
@@ -58,9 +64,18 @@ export function deriveRow(t) {
     hold_s:     s("bought", "sold"),
     inTime:     e.bought != null && e.fading != null ? (e.bought < e.fading ? "yes" : "LATE")
                 : (e.bought != null ? "n/a" : ""),
+    // price moves between milestones (the trajectory)
+    move_window_pct:    mv("sustained", "fading"),   // total move across the sustained window
+    slip_to_buy_pct:    mv("sustained", "bought"),   // how much it ran before you got in
+    after_buy_pct:      mv("bought", "fading"),       // upside still available at your entry
     pnlPct:     t.data?.pnlPct ?? "",
     peakPnlPct: t.data?.peakPnlPct ?? "",
     exitReason: t.data?.exitReason ?? "",
+    // absolute prices at each milestone
+    price_eligible:  p.eligible  ?? "", price_sustained: p.sustained ?? "",
+    price_queued:    p.queued    ?? "", price_bought:    p.bought    ?? "",
+    price_fading:    p.fading    ?? "", price_sold:      p.sold      ?? "",
+    price_collapsed: p.collapsed ?? "",
     t_eligible:  e.eligible  ? new Date(e.eligible).toISOString()  : "",
     t_sustained: e.sustained ? new Date(e.sustained).toISOString() : "",
     t_queued:    e.queued    ? new Date(e.queued).toISOString()    : "",
@@ -97,6 +112,9 @@ export function summary() {
     avgWindowS:   avg(rows, "window_s"),
     avgDecisionS: avg(bought, "decision_s"),
     avgReactionS: avg(bought, "reaction_s"),
+    avgWindowMove: avg(rows, "move_window_pct"),   // avg price move across the window
+    avgSlipToBuy:  avg(bought, "slip_to_buy_pct"), // avg run-up before you got in
+    avgAfterBuy:   avg(bought, "after_buy_pct"),   // avg upside left at your entry
     boughtInTime: bought.length ? bought.filter(r => r.inTime === "yes").length / bought.length : null,
     winRate: sold.length ? wins / sold.length : null,
     avgPnl: avg(sold, "pnlPct"),

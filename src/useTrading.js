@@ -382,7 +382,7 @@ export function useTrading() {
 
       setPositions(prev => [position, ...prev]);
       setQueue(prev => prev.filter(q => q.id !== queueItem.id));
-      logMilestone(queueItem.tokenAddress, queueItem.symbol, "bought", { entryPrice });
+      logMilestone(queueItem.tokenAddress, queueItem.symbol, "bought", { entryPrice, price: entryPrice });
 
       const slNote = adaptiveSL !== queueItem.stopLossPct
         ? ` · SL widened to ${adaptiveSL}% (volatility ${entryVol.toFixed(0)})`
@@ -463,7 +463,8 @@ export function useTrading() {
       setPositions(prev => prev.filter(p => p.id !== position.id));
       setHistory(prev => [closed, ...prev].slice(0, 100));
       logMilestone(position.tokenAddress, position.symbol, "sold", {
-        exitPrice: position.currentPrice, pnlPct: parseFloat(pnlPct.toFixed(2)),
+        exitPrice: position.currentPrice, price: position.currentPrice,
+        pnlPct: parseFloat(pnlPct.toFixed(2)),
         peakPnlPct: position.peakPnlPct ?? null, exitReason: reason,
       });
 
@@ -553,6 +554,10 @@ export function useTrading() {
                 buyPressure: bp, trades5m: act.trades5m, priceChange5m: act.priceChange5m, timing,
                 signal: timing === "fading" ? "FADING" : bp >= 0.55 ? "STRONG" : "OK",
               };
+              // capture the fade moment (price + time) for the held token's trajectory
+              if (timing === "fading") {
+                logMilestone(pos.tokenAddress, pos.symbol, "fading", { price });
+              }
               // Auto-exit only on SUSTAINED fade (windowed), never a single dip.
               if (timing === "fading" && past && (settings.momentumAutoExit ?? false) && !exit) {
                 exit = { reason: "MOMENTUM_FADE" };
@@ -808,6 +813,7 @@ export function useTrading() {
   const addLaunchToQueue = useCallback(async (launch, source = "manual") => {
     logMilestone(launch.mint, launch.symbol, "queued", {
       source, score: launch.score, devSol: launch.devSol,
+      price: launch.eligibility?.priceUsd,
     });
     let priceUsd = 0;
     try {

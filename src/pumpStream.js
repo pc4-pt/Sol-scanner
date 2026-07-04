@@ -198,10 +198,10 @@ export function useLaunchStream({
               ? computeTiming(trend, { sustainSec: c.sustainSec, minSamples: c.minSamples })
               : "building";
             // lifecycle logging (first occurrence of each milestone is recorded)
-            if (res.state === "eligible")  logMilestone(x.mint, x.symbol, "eligible", { score: x.score, devSol: x.devSol });
-            if (res.state === "collapsed") logMilestone(x.mint, x.symbol, "collapsed");
-            if (timing === "sustained")    logMilestone(x.mint, x.symbol, "sustained");
-            if (timing === "fading")       logMilestone(x.mint, x.symbol, "fading");
+            if (res.state === "eligible")  logMilestone(x.mint, x.symbol, "eligible", { score: x.score, devSol: x.devSol, price: res.priceUsd });
+            if (res.state === "collapsed") logMilestone(x.mint, x.symbol, "collapsed", { price: res.priceUsd });
+            if (timing === "sustained")    logMilestone(x.mint, x.symbol, "sustained", { price: res.priceUsd });
+            if (timing === "fading")       logMilestone(x.mint, x.symbol, "fading", { price: res.priceUsd });
             return { ...x, trend, eligibility: { ...res, timing, buyPressure: bp } };
           })))
           .catch(() => {});

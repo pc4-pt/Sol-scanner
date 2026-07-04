@@ -36,7 +36,10 @@ export function LifecycleLog() {
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <Stat label="tracked" value={s.tracked} sub={`${s.sustained} sustained`} />
         <Stat label="avg window" value={fmtS(s.avgWindowS)} sub="sustained→fading" />
+        <Stat label="window move" value={fmtPct(s.avgWindowMove)} sub="price across window" />
         <Stat label="avg react" value={fmtS(s.avgReactionS)} sub="queued→bought" />
+        <Stat label="run-up to buy" value={fmtPct(s.avgSlipToBuy)} sub="moved before entry" />
+        <Stat label="upside at entry" value={fmtPct(s.avgAfterBuy)} sub="entry→fade" />
         <Stat label="bought in time" value={s.boughtInTime == null ? "—" : `${Math.round(s.boughtInTime * 100)}%`} sub={`of ${s.bought} buys`} />
         <Stat label="win rate" value={s.winRate == null ? "—" : `${Math.round(s.winRate * 100)}%`} sub={`${s.sold} closed`} />
         <Stat label="avg P&L" value={fmtPct(s.avgPnl)} sub="per closed trade" />
@@ -57,7 +60,7 @@ export function LifecycleLog() {
           fontSize: "0.6rem" }}>
           <thead>
             <tr style={{ color: "var(--muted)", textAlign: "left" }}>
-              {["token", "score", "src", "window", "decide", "react", "in-time", "hold", "P&L", "peak", "exit"].map(h =>
+              {["token", "score", "src", "window", "w.move", "react", "run-up", "after-buy", "in-time", "hold", "P&L", "peak", "exit"].map(h =>
                 <th key={h} style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)",
                   whiteSpace: "nowrap" }}>{h}</th>)}
             </tr>
@@ -69,8 +72,10 @@ export function LifecycleLog() {
                 <td style={{ padding: "6px 9px" }}>{r.score}</td>
                 <td style={{ padding: "6px 9px", color: r.source === "auto" ? "#7c5cff" : "var(--muted2)" }}>{r.source || "—"}</td>
                 <td style={{ padding: "6px 9px" }}>{fmtS(r.window_s)}</td>
-                <td style={{ padding: "6px 9px" }}>{fmtS(r.decision_s)}</td>
+                <td style={{ padding: "6px 9px", color: r.move_window_pct === null ? "var(--muted)" : Number(r.move_window_pct) >= 0 ? "#00e5c3" : "#ff3860" }}>{fmtPct(r.move_window_pct)}</td>
                 <td style={{ padding: "6px 9px" }}>{fmtS(r.reaction_s)}</td>
+                <td style={{ padding: "6px 9px", color: "#f0a500" }}>{fmtPct(r.slip_to_buy_pct)}</td>
+                <td style={{ padding: "6px 9px", color: r.after_buy_pct === null ? "var(--muted)" : Number(r.after_buy_pct) >= 0 ? "#00e5c3" : "#ff3860" }}>{fmtPct(r.after_buy_pct)}</td>
                 <td style={{ padding: "6px 9px", color: r.inTime === "LATE" ? "#ff3860" : r.inTime === "yes" ? "#00e5c3" : "var(--muted)" }}>{r.inTime || "—"}</td>
                 <td style={{ padding: "6px 9px" }}>{fmtS(r.hold_s)}</td>
                 <td style={{ padding: "6px 9px", color: r.pnlPct === "" ? "var(--muted)" : Number(r.pnlPct) >= 0 ? "#00e5c3" : "#ff3860" }}>{fmtPct(r.pnlPct)}</td>
