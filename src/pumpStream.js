@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
 import { simulateRoundTrip, fetchTokenActivity, computeTiming } from "./tradingEngine.js";
+import { logMilestone } from "./lifecycleLog.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -196,6 +197,11 @@ export function useLaunchStream({
             const timing = res.trades5m != null
               ? computeTiming(trend, { sustainSec: c.sustainSec, minSamples: c.minSamples })
               : "building";
+            // lifecycle logging (first occurrence of each milestone is recorded)
+            if (res.state === "eligible")  logMilestone(x.mint, x.symbol, "eligible", { score: x.score, devSol: x.devSol });
+            if (res.state === "collapsed") logMilestone(x.mint, x.symbol, "collapsed");
+            if (timing === "sustained")    logMilestone(x.mint, x.symbol, "sustained");
+            if (timing === "fading")       logMilestone(x.mint, x.symbol, "fading");
             return { ...x, trend, eligibility: { ...res, timing, buyPressure: bp } };
           })))
           .catch(() => {});

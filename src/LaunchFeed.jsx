@@ -79,7 +79,7 @@ export function LaunchFeed({ trading }) {
       if ((l.devSol ?? 0) < minDev) continue;
       if (s.blockTokenMills && l.priorCount >= millN && (l.priorGrads ?? 0) === 0) continue;
       seen.current.add(l.mint);
-      trading.addLaunchToQueue(l);
+      trading.addLaunchToQueue(l, "auto");
     }
   }, [launches, s.launchAutoQueue, s.minExecScore, s.minDevSol, s.blockTokenMills, s.millMinLaunches, trading]);
 

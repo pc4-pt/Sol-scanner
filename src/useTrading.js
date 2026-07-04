@@ -9,6 +9,7 @@ import {
 } from "./tradingEngine.js";
 import { checkTokenSafety } from "./safety.js";
 import { useBurner } from "./burnerWallet.js";
+import { logMilestone } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -381,6 +382,7 @@ export function useTrading() {
 
       setPositions(prev => [position, ...prev]);
       setQueue(prev => prev.filter(q => q.id !== queueItem.id));
+      logMilestone(queueItem.tokenAddress, queueItem.symbol, "bought", { entryPrice });
 
       const slNote = adaptiveSL !== queueItem.stopLossPct
         ? ` · SL widened to ${adaptiveSL}% (volatility ${entryVol.toFixed(0)})`
@@ -460,6 +462,10 @@ export function useTrading() {
       sellFailCountRef.current.delete(position.id);  // success — reset fail counter
       setPositions(prev => prev.filter(p => p.id !== position.id));
       setHistory(prev => [closed, ...prev].slice(0, 100));
+      logMilestone(position.tokenAddress, position.symbol, "sold", {
+        exitPrice: position.currentPrice, pnlPct: parseFloat(pnlPct.toFixed(2)),
+        peakPnlPct: position.peakPnlPct ?? null, exitReason: reason,
+      });
 
       notify(
         `${pnlSol >= 0 ? "✓" : "✗"} ${position.symbol} closed (${reason}) — ${sign}${pnlPct.toFixed(1)}% / ${sign}${pnlSol.toFixed(4)} SOL`,
@@ -799,7 +805,10 @@ export function useTrading() {
   // queueing on RugCheck — it can't assess a token this young. Safety is advisory
   // here; enforce it at buy time if desired. We seed an initial USD price from the
   // bonding-curve reserves so the queue shows a real price (not 0) and P&L has a basis.
-  const addLaunchToQueue = useCallback(async (launch) => {
+  const addLaunchToQueue = useCallback(async (launch, source = "manual") => {
+    logMilestone(launch.mint, launch.symbol, "queued", {
+      source, score: launch.score, devSol: launch.devSol,
+    });
     let priceUsd = 0;
     try {
       const solUsd = await getSolUsd();
