@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
 import { simulateRoundTrip, fetchTokenActivity, computeTiming } from "./tradingEngine.js";
-import { logMilestone } from "./lifecycleLog.js";
+import { logMilestone, recordPeak } from "./lifecycleLog.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -135,6 +135,7 @@ export function useLaunchStream({
   const [migrations, setMigrations] = useState(0);
   const engineRef = useRef(null);
   const launchesRef = useRef([]);
+  const trackRef = useRef(new Map());   // mint -> passive peak-tracking state
   useEffect(() => { launchesRef.current = launches; }, [launches]);
   const cfgRef = useRef({});
   useEffect(() => {
@@ -200,7 +201,17 @@ export function useLaunchStream({
             // lifecycle logging (first occurrence of each milestone is recorded)
             if (res.state === "eligible")  logMilestone(x.mint, x.symbol, "eligible", { score: x.score, devSol: x.devSol, price: res.priceUsd });
             if (res.state === "collapsed") logMilestone(x.mint, x.symbol, "collapsed", { price: res.priceUsd });
-            if (timing === "sustained")    logMilestone(x.mint, x.symbol, "sustained", { price: res.priceUsd });
+            if (timing === "sustained") {
+              logMilestone(x.mint, x.symbol, "sustained", { price: res.priceUsd });
+              // register for passive peak tracking (paper trade) if not already
+              if (res.priceUsd > 0 && !trackRef.current.has(x.mint) && trackRef.current.size < 60) {
+                trackRef.current.set(x.mint, {
+                  symbol: x.symbol, sustainedPrice: res.priceUsd, sustainedTime: Date.now(),
+                  peakPrice: res.priceUsd, peakTime: Date.now(),
+                  lastPrice: res.priceUsd, startedAt: Date.now(),
+                });
+              }
+            }
             if (timing === "fading")       logMilestone(x.mint, x.symbol, "fading", { price: res.priceUsd });
             return { ...x, trend, eligibility: { ...res, timing, buyPressure: bp } };
           })))
@@ -210,6 +221,48 @@ export function useLaunchStream({
     return () => clearInterval(iv);
   }, [enabled]);
 
+  usePeakTracker(trackRef, enabled);
+
   const clear = useCallback(() => setLaunches([]), []);
   return { launches, status, stats, migrations, clear };
+}
+
+// Passive peak-tracking loop: follows every sustained token's price (bought or not)
+// to record the max upside that followed — a paper-trade dataset for whether the
+// opportunity is real. Uses DexScreener only (no Jupiter load). Defined as a hook
+// helper so it shares the trackRef populated when tokens hit sustained.
+function usePeakTracker(trackRef, enabled) {
+  useEffect(() => {
+    if (!enabled) return;
+    const MAX_TRACK_S = 900;        // follow each token up to 15 min after sustained
+    const COLLAPSE_FRAC = 0.3;      // finalize early if price falls below 30% of sustained
+    const iv = setInterval(async () => {
+      const map = trackRef.current;
+      if (!map.size) return;
+      const now = Date.now();
+      // poll the stalest few each tick to bound API load
+      const entries = [...map.entries()].sort((a, b) => (a[1].lastSeen || 0) - (b[1].lastSeen || 0));
+      for (const [mint, t] of entries.slice(0, 6)) {
+        t.lastSeen = now;
+        let price = null;
+        try { const act = await fetchTokenActivity(mint); price = act?.priceUsd || null; } catch {}
+        if (price && price > t.peakPrice) { t.peakPrice = price; t.peakTime = now; }
+        if (price) t.lastPrice = price;
+        const agedOut = now - t.startedAt > MAX_TRACK_S * 1000;
+        const collapsed = price && price < t.sustainedPrice * COLLAPSE_FRAC;
+        if (agedOut || collapsed) {
+          const peakPct = t.sustainedPrice > 0 ? ((t.peakPrice - t.sustainedPrice) / t.sustainedPrice) * 100 : 0;
+          const ddAfterPeak = t.peakPrice > 0 ? ((t.lastPrice - t.peakPrice) / t.peakPrice) * 100 : 0;
+          recordPeak(mint, t.symbol, {
+            peakPct: +peakPct.toFixed(1),
+            timeToPeakS: Math.round((t.peakTime - t.sustainedTime) / 1000),
+            trackedS: Math.round((now - t.startedAt) / 1000),
+            drawdownAfterPeak: +ddAfterPeak.toFixed(1),
+          });
+          map.delete(mint);
+        }
+      }
+    }, 10000);
+    return () => clearInterval(iv);
+  }, [enabled, trackRef]);
 }

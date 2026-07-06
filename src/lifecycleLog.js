@@ -33,6 +33,9 @@ export function logMilestone(mint, symbol, milestone, data = {}) {
   if (!db[mint]) db[mint] = { mint, symbol: symbol || "?", events: {}, prices: {}, data: {} };
   if (!db[mint].prices) db[mint].prices = {};
   if (symbol && db[mint].symbol === "?") db[mint].symbol = symbol;
+  // "fading" is only meaningful AFTER "sustained" — guard against a fade that was
+  // logged before the token ever sustained (which produced negative windows).
+  if (milestone === "fading" && db[mint].events.sustained == null) return;
   // record the FIRST time each milestone happens, with the price at that moment
   if (db[mint].events[milestone] == null) {
     db[mint].events[milestone] = Date.now();
@@ -42,6 +45,19 @@ export function logMilestone(mint, symbol, milestone, data = {}) {
   // cap total tracked tokens
   const keys = Object.keys(db);
   if (keys.length > 3000) delete db[keys[0]];
+  save();
+}
+
+// Passive paper result: the max a token reached AFTER hitting sustained, whether or
+// not it was bought. This is the opportunity distribution — does upside actually follow?
+export function recordPeak(mint, symbol, { peakPct, timeToPeakS, trackedS, drawdownAfterPeak }) {
+  if (!mint) return;
+  const db = load();
+  if (!db[mint]) db[mint] = { mint, symbol: symbol || "?", events: {}, prices: {}, data: {} };
+  db[mint].data.peakPct = peakPct;
+  db[mint].data.timeToPeakS = timeToPeakS;
+  db[mint].data.trackedS = trackedS;
+  if (drawdownAfterPeak != null) db[mint].data.drawdownAfterPeak = drawdownAfterPeak;
   save();
 }
 
@@ -64,6 +80,11 @@ export function deriveRow(t) {
     hold_s:     s("bought", "sold"),
     inTime:     e.bought != null && e.fading != null ? (e.bought < e.fading ? "yes" : "LATE")
                 : (e.bought != null ? "n/a" : ""),
+    // PASSIVE PAPER RESULT — max upside after sustained, whether or not bought
+    upside_pct:      t.data?.peakPct ?? "",           // sustained → peak (the opportunity)
+    time_to_peak_s:  t.data?.timeToPeakS ?? "",
+    dd_after_peak:   t.data?.drawdownAfterPeak ?? "", // how fast it gave back after peak
+    tracked_s:       t.data?.trackedS ?? "",
     // price moves between milestones (the trajectory)
     move_window_pct:    mv("sustained", "fading"),   // total move across the sustained window
     slip_to_buy_pct:    mv("sustained", "bought"),   // how much it ran before you got in
@@ -103,6 +124,12 @@ export function summary() {
     return v.length ? v.reduce((a, b) => a + Number(b), 0) / v.length : null;
   };
   const wins = sold.filter(r => Number(r.pnlPct) > 0).length;
+  // Opportunity distribution: of sustained tokens passively tracked, how much upside
+  // actually followed — the answer to "is the profit even there?"
+  const withPeak = rows.filter(r => r.upside_pct !== "" && r.upside_pct != null);
+  const peaks = withPeak.map(r => Number(r.upside_pct));
+  const med = (a) => { if (!a.length) return null; const b=[...a].sort((x,y)=>x-y); const m=b.length>>1; return b.length%2?b[m]:(b[m-1]+b[m])/2; };
+  const pctReaching = (thr) => peaks.length ? peaks.filter(p => p >= thr).length / peaks.length : null;
   return {
     tracked: rows.length,
     eligible: rows.filter(r => r.t_eligible).length,
@@ -118,6 +145,12 @@ export function summary() {
     boughtInTime: bought.length ? bought.filter(r => r.inTime === "yes").length / bought.length : null,
     winRate: sold.length ? wins / sold.length : null,
     avgPnl: avg(sold, "pnlPct"),
+    opp_n: withPeak.length,
+    opp_medianPeak: med(peaks),
+    opp_over20: pctReaching(20),
+    opp_over50: pctReaching(50),
+    opp_over100: pctReaching(100),
+    opp_medianTimeToPeak: med(withPeak.map(r => Number(r.time_to_peak_s)).filter(x => !isNaN(x))),
   };
 }
 

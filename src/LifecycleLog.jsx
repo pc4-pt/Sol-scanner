@@ -33,10 +33,22 @@ export function LifecycleLog() {
         did you buy before it faded. Export to analyse whether the window is tradeable and where to tune.
       </p>
 
+      <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
+        letterSpacing: "0.1em", marginBottom: 6 }}>OPPORTUNITY — passive paper result of every sustained token</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        <Stat label="tracked (paper)" value={s.opp_n} sub="sustained + followed" />
+        <Stat label="median peak" value={fmtPct(s.opp_medianPeak)} sub="sustained→max" />
+        <Stat label="reached +20%" value={s.opp_over20 == null ? "—" : `${Math.round(s.opp_over20 * 100)}%`} sub="of tracked" />
+        <Stat label="reached +50%" value={s.opp_over50 == null ? "—" : `${Math.round(s.opp_over50 * 100)}%`} sub="of tracked" />
+        <Stat label="reached +100%" value={s.opp_over100 == null ? "—" : `${Math.round(s.opp_over100 * 100)}%`} sub="of tracked" />
+        <Stat label="median time-to-peak" value={fmtS(s.opp_medianTimeToPeak)} sub="how fast to act" />
+      </div>
+
+      <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
+        letterSpacing: "0.1em", marginBottom: 6 }}>EXECUTION — your actual trades</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <Stat label="tracked" value={s.tracked} sub={`${s.sustained} sustained`} />
         <Stat label="avg window" value={fmtS(s.avgWindowS)} sub="sustained→fading" />
-        <Stat label="window move" value={fmtPct(s.avgWindowMove)} sub="price across window" />
         <Stat label="avg react" value={fmtS(s.avgReactionS)} sub="queued→bought" />
         <Stat label="run-up to buy" value={fmtPct(s.avgSlipToBuy)} sub="moved before entry" />
         <Stat label="upside at entry" value={fmtPct(s.avgAfterBuy)} sub="entry→fade" />
@@ -60,7 +72,7 @@ export function LifecycleLog() {
           fontSize: "0.6rem" }}>
           <thead>
             <tr style={{ color: "var(--muted)", textAlign: "left" }}>
-              {["token", "score", "src", "window", "w.move", "react", "run-up", "after-buy", "in-time", "hold", "P&L", "peak", "exit"].map(h =>
+              {["token", "score", "src", "upside", "→pk", "window", "react", "run-up", "after-buy", "in-time", "P&L", "peak", "exit"].map(h =>
                 <th key={h} style={{ padding: "7px 9px", borderBottom: "1px solid var(--border)",
                   whiteSpace: "nowrap" }}>{h}</th>)}
             </tr>
@@ -71,13 +83,13 @@ export function LifecycleLog() {
                 <td style={{ padding: "6px 9px", color: "var(--text,#e2e8f0)" }}>{r.symbol}</td>
                 <td style={{ padding: "6px 9px" }}>{r.score}</td>
                 <td style={{ padding: "6px 9px", color: r.source === "auto" ? "#7c5cff" : "var(--muted2)" }}>{r.source || "—"}</td>
+                <td style={{ padding: "6px 9px", fontWeight: 700, color: r.upside_pct === "" ? "var(--muted)" : Number(r.upside_pct) >= 20 ? "#00e5c3" : Number(r.upside_pct) > 0 ? "#b8f542" : "#ff3860" }}>{fmtPct(r.upside_pct)}</td>
+                <td style={{ padding: "6px 9px", color: "var(--muted2)" }}>{fmtS(r.time_to_peak_s)}</td>
                 <td style={{ padding: "6px 9px" }}>{fmtS(r.window_s)}</td>
-                <td style={{ padding: "6px 9px", color: r.move_window_pct === null ? "var(--muted)" : Number(r.move_window_pct) >= 0 ? "#00e5c3" : "#ff3860" }}>{fmtPct(r.move_window_pct)}</td>
                 <td style={{ padding: "6px 9px" }}>{fmtS(r.reaction_s)}</td>
                 <td style={{ padding: "6px 9px", color: "#f0a500" }}>{fmtPct(r.slip_to_buy_pct)}</td>
                 <td style={{ padding: "6px 9px", color: r.after_buy_pct === null ? "var(--muted)" : Number(r.after_buy_pct) >= 0 ? "#00e5c3" : "#ff3860" }}>{fmtPct(r.after_buy_pct)}</td>
                 <td style={{ padding: "6px 9px", color: r.inTime === "LATE" ? "#ff3860" : r.inTime === "yes" ? "#00e5c3" : "var(--muted)" }}>{r.inTime || "—"}</td>
-                <td style={{ padding: "6px 9px" }}>{fmtS(r.hold_s)}</td>
                 <td style={{ padding: "6px 9px", color: r.pnlPct === "" ? "var(--muted)" : Number(r.pnlPct) >= 0 ? "#00e5c3" : "#ff3860" }}>{fmtPct(r.pnlPct)}</td>
                 <td style={{ padding: "6px 9px" }}>{fmtPct(r.peakPnlPct)}</td>
                 <td style={{ padding: "6px 9px" }}>{r.exitReason || "—"}</td>
