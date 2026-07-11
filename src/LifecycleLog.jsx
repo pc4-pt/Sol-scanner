@@ -17,6 +17,44 @@ function Stat({ label, value, sub }) {
   );
 }
 
+function PeakHistogram({ rows }) {
+  const peaks = rows.map(r => r.upside_pct).filter(v => v !== "" && v != null).map(Number);
+  if (peaks.length < 5) return null;
+  const buckets = [
+    { label: "≤0%", lo: -1e9, hi: 0.0001, color: "#ff3860" },
+    { label: "0–10", lo: 0.0001, hi: 10, color: "#f0a500" },
+    { label: "10–20", lo: 10, hi: 20, color: "#b8f542" },
+    { label: "20–30", lo: 20, hi: 30, color: "#8ee642" },
+    { label: "30–50", lo: 30, hi: 50, color: "#00e5c3" },
+    { label: "50–100", lo: 50, hi: 100, color: "#00c3e5" },
+    { label: "100+", lo: 100, hi: 1e9, color: "#7c5cff" },
+  ].map(b => ({ ...b, n: peaks.filter(p => p >= b.lo && p < b.hi).length }));
+  const max = Math.max(...buckets.map(b => b.n), 1);
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
+        letterSpacing: "0.1em", marginBottom: 8 }}>PEAK DISTRIBUTION — max gain after sustained (n={peaks.length})</div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 120,
+        borderBottom: "1px solid var(--border)", paddingBottom: 2 }}>
+        {buckets.map(b => (
+          <div key={b.label} style={{ flex: 1, display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "flex-end", height: "100%" }}>
+            <div style={{ fontSize: "0.56rem", color: "var(--muted2)", fontFamily: "var(--font-mono,monospace)" }}>{b.n}</div>
+            <div style={{ width: "100%", height: `${(b.n / max) * 90}%`, background: b.color,
+              borderRadius: "3px 3px 0 0", minHeight: b.n ? 2 : 0 }} />
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+        {buckets.map(b => (
+          <div key={b.label} style={{ flex: 1, textAlign: "center", fontSize: "0.5rem",
+            color: "var(--muted)", fontFamily: "var(--font-mono,monospace)" }}>{b.label}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function LifecycleLog() {
   const [, tick] = useState(0);
   useEffect(() => { const iv = setInterval(() => tick(n => n + 1), 4000); return () => clearInterval(iv); }, []);
@@ -43,6 +81,8 @@ export function LifecycleLog() {
         <Stat label="reached +100%" value={s.opp_over100 == null ? "—" : `${Math.round(s.opp_over100 * 100)}%`} sub="of tracked" />
         <Stat label="median time-to-peak" value={fmtS(s.opp_medianTimeToPeak)} sub="how fast to act" />
       </div>
+
+      <PeakHistogram rows={rows} />
 
       <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
         letterSpacing: "0.1em", marginBottom: 6 }}>EXECUTION — your actual trades</div>

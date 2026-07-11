@@ -48,6 +48,17 @@ export function logMilestone(mint, symbol, milestone, data = {}) {
   save();
 }
 
+// Feature snapshot AT THE SUSTAINED MOMENT — combines t=0 launch data with the live
+// market state, so we can later correlate which features separate runners from duds.
+export function recordFeatures(mint, symbol, features) {
+  if (!mint) return;
+  const db = load();
+  if (!db[mint]) db[mint] = { mint, symbol: symbol || "?", events: {}, prices: {}, data: {} };
+  if (db[mint].data.f_captured) return;    // snapshot once, at first sustained
+  Object.assign(db[mint].data, features, { f_captured: 1 });
+  save();
+}
+
 // Passive paper result: the max a token reached AFTER hitting sustained, whether or
 // not it was bought. This is the opportunity distribution — does upside actually follow?
 export function recordPeak(mint, symbol, { peakPct, timeToPeakS, trackedS, drawdownAfterPeak }) {
@@ -85,6 +96,24 @@ export function deriveRow(t) {
     time_to_peak_s:  t.data?.timeToPeakS ?? "",
     dd_after_peak:   t.data?.drawdownAfterPeak ?? "", // how fast it gave back after peak
     tracked_s:       t.data?.trackedS ?? "",
+    // ── feature snapshot at the sustained moment (for runner-vs-dud analysis) ──
+    f_devSol:        t.data?.f_devSol ?? "",
+    f_priorGrads:    t.data?.f_priorGrads ?? "",
+    f_priorCount:    t.data?.f_priorCount ?? "",
+    f_isMayhem:      t.data?.f_isMayhem ?? "",
+    f_liq:           t.data?.f_liq ?? "",
+    f_fdv:           t.data?.f_fdv ?? "",
+    f_ageMin:        t.data?.f_ageMin ?? "",
+    f_vol5m:         t.data?.f_vol5m ?? "",
+    f_volH1:         t.data?.f_volH1 ?? "",
+    f_buyRatio5m:    t.data?.f_buyRatio5m ?? "",
+    f_buyRatioH1:    t.data?.f_buyRatioH1 ?? "",
+    f_pcH1:          t.data?.f_pcH1 ?? "",
+    f_volLiq:        t.data?.f_volLiq ?? "",
+    f_hasSocials:    t.data?.f_hasSocials ?? "",
+    f_hasWebsite:    t.data?.f_hasWebsite ?? "",
+    f_nPairs:        t.data?.f_nPairs ?? "",
+    f_boosts:        t.data?.f_boosts ?? "",
     // price moves between milestones (the trajectory)
     move_window_pct:    mv("sustained", "fading"),   // total move across the sustained window
     slip_to_buy_pct:    mv("sustained", "bought"),   // how much it ran before you got in

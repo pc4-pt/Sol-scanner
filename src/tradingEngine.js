@@ -547,15 +547,30 @@ export async function fetchTokenActivity(mint) {
       (a, b) => parseFloat(b.liquidity?.usd || 0) - parseFloat(a.liquidity?.usd || 0)
     )[0];
     const t5 = p.txns?.m5 || {};
+    const th1 = p.txns?.h1 || {};
     const buys5m  = parseInt(t5.buys  || 0) || 0;
     const sells5m = parseInt(t5.sells || 0) || 0;
+    const buysH1  = parseInt(th1.buys  || 0) || 0;
+    const sellsH1 = parseInt(th1.sells || 0) || 0;
+    const socials  = p.info?.socials || [];
+    const websites = p.info?.websites || [];
     return {
       pairAddress:   p.pairAddress || null,
       priceUsd:      parseFloat(p.priceUsd || 0) || 0,
       priceChange5m: parseFloat(p.priceChange?.m5 ?? 0) || 0,
+      priceChangeH1: parseFloat(p.priceChange?.h1 ?? 0) || 0,
       buys5m, sells5m, trades5m: buys5m + sells5m,
+      buysH1, sellsH1, tradesH1: buysH1 + sellsH1,
       vol5m:         parseFloat(p.volume?.m5 || 0) || 0,
+      volH1:         parseFloat(p.volume?.h1 || 0) || 0,
       liq:           parseFloat(p.liquidity?.usd || 0) || 0,
+      fdv:           parseFloat(p.fdv || 0) || 0,
+      marketCap:     parseFloat(p.marketCap || 0) || 0,
+      ageMin:        p.pairCreatedAt ? Math.round((Date.now() - p.pairCreatedAt) / 60000) : null,
+      nPairs:        pairs.length,
+      hasSocials:    socials.length > 0 ? 1 : 0,
+      hasWebsite:    websites.length > 0 ? 1 : 0,
+      boosts:        p.boosts?.active || 0,
     };
   } catch { return null; }
 }
@@ -710,6 +725,7 @@ export const DEFAULT_TRADE_SETTINGS = {
   // signal, since a manual entry a few seconds late still lands in a sustained move.
   sustainWindowSec:   90,         // momentum must hold this long to count as sustained
   minMomentumSamples: 4,          // minimum activity samples before judging timing
+  minSustainScore:    60,         // only paper-track sustained tokens at/above this score (data showed <60 ≈ 5% hit the tail); set 0 to track all
   // ── Notifications — KEPT ─────────────────────────────────────────────────
   notifyBrowser:      true,       // push notifications when tab is backgrounded
   notifySound:        true,       // play tone for queue/fill/exit/error events

@@ -54,6 +54,7 @@ export function LaunchFeed({ trading }) {
     collapseDropPct: s.collapseDropPct ?? 40,
     sustainSec: s.sustainWindowSec ?? 90,
     minSamples: s.minMomentumSamples ?? 4,
+    minSustainScore: s.minSustainScore ?? 60,
     validateMinScore: Math.min(minScore, s.minExecScore ?? 68),
   });
 

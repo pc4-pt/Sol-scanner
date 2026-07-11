@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
 import { simulateRoundTrip, fetchTokenActivity, computeTiming } from "./tradingEngine.js";
-import { logMilestone, recordPeak } from "./lifecycleLog.js";
+import { logMilestone, recordPeak, recordFeatures } from "./lifecycleLog.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -127,6 +127,7 @@ export function useLaunchStream({
   confirmWindowSec = 90, probeSol = 0.05, minRecovery = 0.7,
   minTrades5m = 4, minLiqUsd = 400, collapseDropPct = 40,
   sustainSec = 90, minSamples = 4,
+  minSustainScore = 60,
   validateMinScore = 40,
 } = {}) {
   const [launches, setLaunches] = useState([]);
@@ -140,8 +141,8 @@ export function useLaunchStream({
   const cfgRef = useRef({});
   useEffect(() => {
     cfgRef.current = { confirmWindowSec, probeSol, minRecovery, minTrades5m,
-                       minLiqUsd, collapseDropPct, sustainSec, minSamples, validateMinScore };
-  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, validateMinScore]);
+                       minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, validateMinScore };
+  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, validateMinScore]);
 
   useEffect(() => {
     if (!enabled) { setStatus("off"); return; }
@@ -203,8 +204,23 @@ export function useLaunchStream({
             if (res.state === "collapsed") logMilestone(x.mint, x.symbol, "collapsed", { price: res.priceUsd });
             if (timing === "sustained") {
               logMilestone(x.mint, x.symbol, "sustained", { price: res.priceUsd });
-              // register for passive peak tracking (paper trade) if not already
-              if (res.priceUsd > 0 && !trackRef.current.has(x.mint) && trackRef.current.size < 60) {
+              // rich feature snapshot at the sustained moment (t=0 + live market state)
+              recordFeatures(x.mint, x.symbol, {
+                f_devSol: x.devSol, f_launchMcapSol: x.marketCapSol,
+                f_isMayhem: x.isMayhem ? 1 : 0,
+                f_priorCount: x.priorCount, f_priorGrads: x.priorGrads,
+                f_liq: res.liq, f_fdv: res.fdv, f_ageMin: res.ageMin,
+                f_vol5m: res.vol5m, f_volH1: res.volH1,
+                f_buyRatio5m: res.trades5m ? +(res.buys5m / res.trades5m).toFixed(3) : null,
+                f_buyRatioH1: res.tradesH1 ? +(res.buysH1 / res.tradesH1).toFixed(3) : null,
+                f_pcH1: res.priceChangeH1,
+                f_volLiq: res.liq ? +(res.vol5m / res.liq).toFixed(3) : null,
+                f_hasSocials: res.hasSocials, f_hasWebsite: res.hasWebsite,
+                f_nPairs: res.nPairs, f_boosts: res.boosts,
+              });
+              // passive peak tracking — focus on tokens at/above the score floor
+              if (res.priceUsd > 0 && (x.score ?? 0) >= c.minSustainScore
+                  && !trackRef.current.has(x.mint) && trackRef.current.size < 60) {
                 trackRef.current.set(x.mint, {
                   symbol: x.symbol, sustainedPrice: res.priceUsd, sustainedTime: Date.now(),
                   peakPrice: res.priceUsd, peakTime: Date.now(),
