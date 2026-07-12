@@ -128,6 +128,7 @@ export function useLaunchStream({
   minTrades5m = 4, minLiqUsd = 400, collapseDropPct = 40,
   sustainSec = 90, minSamples = 4,
   minSustainScore = 60,
+  minSustainPcH1 = 40, minSustainVolH1 = 1500,
   validateMinScore = 40,
 } = {}) {
   const [launches, setLaunches] = useState([]);
@@ -141,8 +142,9 @@ export function useLaunchStream({
   const cfgRef = useRef({});
   useEffect(() => {
     cfgRef.current = { confirmWindowSec, probeSol, minRecovery, minTrades5m,
-                       minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, validateMinScore };
-  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, validateMinScore]);
+                       minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore,
+                       minSustainPcH1, minSustainVolH1, validateMinScore };
+  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, minSustainPcH1, minSustainVolH1, validateMinScore]);
 
   useEffect(() => {
     if (!enabled) { setStatus("off"); return; }
@@ -204,21 +206,34 @@ export function useLaunchStream({
             if (res.state === "collapsed") logMilestone(x.mint, x.symbol, "collapsed", { price: res.priceUsd });
             if (timing === "sustained") {
               logMilestone(x.mint, x.symbol, "sustained", { price: res.priceUsd });
-              // rich feature snapshot at the sustained moment (t=0 + live market state)
+              // liquidity: DexScreener usd is often empty for fresh pump pairs — fall
+              // back to the SOL side of the pool as the liquidity measure.
+              const liqUsd = res.liq || 0;
+              const liqSol = res.liqSol || 0;
+              const liqMeasure = liqUsd || liqSol;   // prefer usd, else SOL-denominated
+              // ACTIONABLE FILTER (from the optimiser): non-mayhem + pcH1>=floor + volH1>=floor.
+              // This is a FLAG, not a tracking gate — we still paper-track failing tokens as
+              // a control group so we can confirm the filter's edge holds.
+              const passedFilter =
+                (x.isMayhem ? 0 : 1) &&
+                ((res.priceChangeH1 ?? 0) >= c.minSustainPcH1) &&
+                ((res.volH1 ?? 0) >= c.minSustainVolH1) ? 1 : 0;
               recordFeatures(x.mint, x.symbol, {
                 f_devSol: x.devSol, f_launchMcapSol: x.marketCapSol,
                 f_isMayhem: x.isMayhem ? 1 : 0,
                 f_priorCount: x.priorCount, f_priorGrads: x.priorGrads,
-                f_liq: res.liq, f_fdv: res.fdv, f_ageMin: res.ageMin,
+                f_liq: liqUsd, f_liqSol: liqSol, f_fdv: res.fdv, f_ageMin: res.ageMin,
                 f_vol5m: res.vol5m, f_volH1: res.volH1,
                 f_buyRatio5m: res.trades5m ? +(res.buys5m / res.trades5m).toFixed(3) : null,
                 f_buyRatioH1: res.tradesH1 ? +(res.buysH1 / res.tradesH1).toFixed(3) : null,
                 f_pcH1: res.priceChangeH1,
-                f_volLiq: res.liq ? +(res.vol5m / res.liq).toFixed(3) : null,
+                f_volLiq: liqMeasure ? +(res.vol5m / liqMeasure).toFixed(3) : null,
                 f_hasSocials: res.hasSocials, f_hasWebsite: res.hasWebsite,
                 f_nPairs: res.nPairs, f_boosts: res.boosts,
+                f_passedFilter: passedFilter,
               });
-              // passive peak tracking — focus on tokens at/above the score floor
+              // passive peak tracking — track ALL score-qualified sustained tokens
+              // (control group included); the passedFilter flag lets us compare.
               if (res.priceUsd > 0 && (x.score ?? 0) >= c.minSustainScore
                   && !trackRef.current.has(x.mint) && trackRef.current.size < 60) {
                 trackRef.current.set(x.mint, {
@@ -227,9 +242,12 @@ export function useLaunchStream({
                   lastPrice: res.priceUsd, startedAt: Date.now(),
                 });
               }
+              // expose the filter result on the launch for feed display + auto-queue
+              res._passedFilter = passedFilter;
             }
             if (timing === "fading")       logMilestone(x.mint, x.symbol, "fading", { price: res.priceUsd });
-            return { ...x, trend, eligibility: { ...res, timing, buyPressure: bp } };
+            return { ...x, trend, eligibility: { ...res, timing, buyPressure: bp,
+              passedFilter: res._passedFilter ?? x.eligibility?.passedFilter } };
           })))
           .catch(() => {});
       }

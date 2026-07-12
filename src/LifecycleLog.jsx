@@ -85,6 +85,15 @@ export function LifecycleLog() {
       <PeakHistogram rows={rows} />
 
       <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
+        letterSpacing: "0.1em", marginBottom: 6 }}>ACTIONABLE FILTER vs CONTROL — does non-mayhem + pcH1 + volH1 beat the rest?</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 18 }}>
+        <Stat label="★ passed filter" value={s.filt_pass_n} sub="tracked" />
+        <Stat label="passed hit +20%" value={s.filt_pass_hit20 == null ? "—" : `${Math.round(s.filt_pass_hit20 * 100)}%`} sub={`median ${fmtPct(s.filt_pass_med)}`} />
+        <Stat label="control (failed)" value={s.filt_fail_n} sub="tracked" />
+        <Stat label="control hit +20%" value={s.filt_fail_hit20 == null ? "—" : `${Math.round(s.filt_fail_hit20 * 100)}%`} sub={`median ${fmtPct(s.filt_fail_med)}`} />
+      </div>
+
+      <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
         letterSpacing: "0.1em", marginBottom: 6 }}>EXECUTION — your actual trades</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <Stat label="tracked" value={s.tracked} sub={`${s.sustained} sustained`} />

@@ -564,6 +564,8 @@ export async function fetchTokenActivity(mint) {
       vol5m:         parseFloat(p.volume?.m5 || 0) || 0,
       volH1:         parseFloat(p.volume?.h1 || 0) || 0,
       liq:           parseFloat(p.liquidity?.usd || 0) || 0,
+      liqSol:        parseFloat(p.liquidity?.quote || 0) || 0,   // SOL side of the pool (usd is often empty for fresh pump pairs)
+      liqBase:       parseFloat(p.liquidity?.base || 0) || 0,
       fdv:           parseFloat(p.fdv || 0) || 0,
       marketCap:     parseFloat(p.marketCap || 0) || 0,
       ageMin:        p.pairCreatedAt ? Math.round((Date.now() - p.pairCreatedAt) / 60000) : null,
@@ -726,6 +728,11 @@ export const DEFAULT_TRADE_SETTINGS = {
   sustainWindowSec:   90,         // momentum must hold this long to count as sustained
   minMomentumSamples: 4,          // minimum activity samples before judging timing
   minSustainScore:    60,         // only paper-track sustained tokens at/above this score (data showed <60 ≈ 5% hit the tail); set 0 to track all
+  // Actionable filter (from the optimiser: non-mayhem + pcH1>=40 + volH1>=1500 → ~60%
+  // hit-rate vs 17% baseline). Applied as a flag for auto-queue + feed marker; failing
+  // tokens are still paper-tracked as a control group.
+  minSustainPcH1:     40,         // require 1h price change >= this% at sustained
+  minSustainVolH1:    1500,       // require 1h volume >= $ this at sustained
   // ── Notifications — KEPT ─────────────────────────────────────────────────
   notifyBrowser:      true,       // push notifications when tab is backgrounded
   notifySound:        true,       // play tone for queue/fill/exit/error events

@@ -102,6 +102,7 @@ export function deriveRow(t) {
     f_priorCount:    t.data?.f_priorCount ?? "",
     f_isMayhem:      t.data?.f_isMayhem ?? "",
     f_liq:           t.data?.f_liq ?? "",
+    f_liqSol:        t.data?.f_liqSol ?? "",
     f_fdv:           t.data?.f_fdv ?? "",
     f_ageMin:        t.data?.f_ageMin ?? "",
     f_vol5m:         t.data?.f_vol5m ?? "",
@@ -114,6 +115,7 @@ export function deriveRow(t) {
     f_hasWebsite:    t.data?.f_hasWebsite ?? "",
     f_nPairs:        t.data?.f_nPairs ?? "",
     f_boosts:        t.data?.f_boosts ?? "",
+    f_passedFilter:  t.data?.f_passedFilter ?? "",
     // price moves between milestones (the trajectory)
     move_window_pct:    mv("sustained", "fading"),   // total move across the sustained window
     slip_to_buy_pct:    mv("sustained", "bought"),   // how much it ran before you got in
@@ -180,6 +182,13 @@ export function summary() {
     opp_over50: pctReaching(50),
     opp_over100: pctReaching(100),
     opp_medianTimeToPeak: med(withPeak.map(r => Number(r.time_to_peak_s)).filter(x => !isNaN(x))),
+    // control-group comparison: does the actionable filter actually beat the rest?
+    filt_pass_n:  withPeak.filter(r => r.f_passedFilter === 1 || r.f_passedFilter === "1").length,
+    filt_pass_hit20: (() => { const g = withPeak.filter(r => r.f_passedFilter === 1 || r.f_passedFilter === "1"); return g.length ? g.filter(r => Number(r.upside_pct) >= 20).length / g.length : null; })(),
+    filt_pass_med: (() => { const g = withPeak.filter(r => r.f_passedFilter === 1 || r.f_passedFilter === "1").map(r => Number(r.upside_pct)); return med(g); })(),
+    filt_fail_n:  withPeak.filter(r => r.f_passedFilter === 0 || r.f_passedFilter === "0").length,
+    filt_fail_hit20: (() => { const g = withPeak.filter(r => r.f_passedFilter === 0 || r.f_passedFilter === "0"); return g.length ? g.filter(r => Number(r.upside_pct) >= 20).length / g.length : null; })(),
+    filt_fail_med: (() => { const g = withPeak.filter(r => r.f_passedFilter === 0 || r.f_passedFilter === "0").map(r => Number(r.upside_pct)); return med(g); })(),
   };
 }
 

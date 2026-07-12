@@ -55,6 +55,8 @@ export function LaunchFeed({ trading }) {
     sustainSec: s.sustainWindowSec ?? 90,
     minSamples: s.minMomentumSamples ?? 4,
     minSustainScore: s.minSustainScore ?? 60,
+    minSustainPcH1: s.minSustainPcH1 ?? 40,
+    minSustainVolH1: s.minSustainVolH1 ?? 1500,
     validateMinScore: Math.min(minScore, s.minExecScore ?? 68),
   });
 
@@ -74,8 +76,9 @@ export function LaunchFeed({ trading }) {
     const millN   = s.millMinLaunches ?? 5;
     for (const l of launches) {
       if (seen.current.has(l.mint)) continue;
-      if (l.eligibility?.state !== "eligible") continue;         // survival gate
+      if (l.eligibility?.state !== "eligible") continue;          // survival gate
       if (l.eligibility?.timing !== "sustained") continue;       // sustained-momentum gate
+      if (l.eligibility?.passedFilter !== 1) continue;           // actionable filter (non-mayhem + pcH1 + volH1)
       if (l.score < minExec) continue;
       if ((l.devSol ?? 0) < minDev) continue;
       if (s.blockTokenMills && l.priorCount >= millN && (l.priorGrads ?? 0) === 0) continue;
@@ -176,7 +179,8 @@ export function LaunchFeed({ trading }) {
                           cooling: ["#f0a500", "•COOLING"], fading: ["#ff3860", "▼FADING"],
                         };
                         const [c2, lbl] = map[el.timing] || ["var(--muted)", ""];
-                        return lbl ? <span style={{ color: c2, fontWeight: 700 }}>{" · "}{lbl}</span> : null;
+                        const star = el.timing === "sustained" && el.passedFilter === 1;
+                        return lbl ? <span style={{ color: c2, fontWeight: 700 }}>{" · "}{star ? "★" : ""}{lbl}</span> : null;
                       })()}
                     </>
                   : <span style={{ color: "var(--muted)" }}>{new Date(l.ts).toLocaleTimeString()}</span>}
