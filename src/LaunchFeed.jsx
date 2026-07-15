@@ -8,6 +8,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { useLaunchStream } from "./pumpStream.js";
 import { MODEL_INFO } from "./launchScore.js";
 import { BurnerWallet } from "./BurnerWallet.jsx";
+import { PumpPortalProbe } from "./PumpPortalProbe.jsx";
 
 const scoreColor = (s) =>
   s >= 70 ? "#00e5c3" : s >= 55 ? "#b8f542" : s >= 40 ? "#f0a500" : "#64748b";
@@ -137,6 +138,7 @@ export function LaunchFeed({ trading }) {
           {s.autoExecute ? "● AUTO-EXECUTE ON (real buys)" : "○ manual buy (paper-safe)"}
         </span>
         <BurnerWallet trading={trading} />
+        <PumpPortalProbe trading={trading} />
         <button onClick={() => setOnlyActionable(v => !v)} style={{
           background: onlyActionable ? "#00e5c322" : "transparent",
           border: `1px solid ${onlyActionable ? "#00e5c3" : "var(--border)"}`,

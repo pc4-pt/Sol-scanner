@@ -15,6 +15,12 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           rewrite: (path) => path.replace(/^\/api\/dex/, ''),
         },
+        // PumpPortal Local trade — avoids CORS in dev; prod uses api/pump.js
+        '/api/pump': {
+          target: 'https://pumpportal.fun',
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api\/pump/, '/api/trade-local'),
+        },
         // Jupiter proxy — injects API key server-side so it never hits the browser
         '/api/jupiter': {
           target: 'https://api.jup.ag',

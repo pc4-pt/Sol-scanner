@@ -6,6 +6,7 @@
   "rewrites": [
     { "source": "/api/quote", "destination": "/api/quote" },
     { "source": "/api/swap",  "destination": "/api/swap"  },
+    { "source": "/api/pump",  "destination": "/api/pump"  },
     { "source": "/:path*",    "destination": "/index.html" }
   ]
 }
