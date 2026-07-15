@@ -189,6 +189,18 @@ export function summary() {
     filt_fail_n:  withPeak.filter(r => r.f_passedFilter === 0 || r.f_passedFilter === "0").length,
     filt_fail_hit20: (() => { const g = withPeak.filter(r => r.f_passedFilter === 0 || r.f_passedFilter === "0"); return g.length ? g.filter(r => Number(r.upside_pct) >= 20).length / g.length : null; })(),
     filt_fail_med: (() => { const g = withPeak.filter(r => r.f_passedFilter === 0 || r.f_passedFilter === "0").map(r => Number(r.upside_pct)); return med(g); })(),
+    // REALISED vs PAPER — for actual trades: what the token offered (paper peak from
+    // sustained) vs what you were up at your entry vs what you actually kept.
+    rvp_n: sold.length,
+    rvp_paperPeak: avg(sold, "upside_pct"),     // max available from the sustained price
+    rvp_yourPeak:  avg(sold, "peakPnlPct"),     // max you were up from YOUR entry
+    rvp_realised:  avg(sold, "pnlPct"),         // what you actually closed at
+    rvp_entryDrag: avg(sold, "slip_to_buy_pct"),// run-up you paid before entering
+    rvp_capture: (() => {
+      const g = sold.filter(r => Number(r.peakPnlPct) > 0);
+      if (!g.length) return null;
+      return g.reduce((a, r) => a + Number(r.pnlPct) / Number(r.peakPnlPct), 0) / g.length;
+    })(),
   };
 }
 

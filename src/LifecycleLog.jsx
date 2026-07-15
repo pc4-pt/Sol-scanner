@@ -94,6 +94,21 @@ export function LifecycleLog() {
       </div>
 
       <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
+        letterSpacing: "0.1em", marginBottom: 6 }}>REALISED vs PAPER — execution efficiency on your actual trades</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+        <Stat label="trades" value={s.rvp_n} sub="closed" />
+        <Stat label="paper peak" value={fmtPct(s.rvp_paperPeak)} sub="offered from sustained" />
+        <Stat label="entry drag" value={fmtPct(s.rvp_entryDrag)} sub="run-up before you bought" />
+        <Stat label="your peak" value={fmtPct(s.rvp_yourPeak)} sub="max up from entry" />
+        <Stat label="realised" value={fmtPct(s.rvp_realised)} sub="what you kept" />
+        <Stat label="capture" value={s.rvp_capture == null ? "—" : `${Math.round(s.rvp_capture * 100)}%`} sub="realised ÷ your peak" />
+      </div>
+      <p style={{ fontSize: "0.58rem", color: "var(--muted)", marginBottom: 16, lineHeight: 1.5 }}>
+        paper peak → your peak gap = entry timing cost · your peak → realised gap = exit efficiency.
+        Low capture % means exiting too late; large entry drag means the run-up is eating the move.
+      </p>
+
+      <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
         letterSpacing: "0.1em", marginBottom: 6 }}>EXECUTION — your actual trades</div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <Stat label="tracked" value={s.tracked} sub={`${s.sustained} sustained`} />

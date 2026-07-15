@@ -64,6 +64,9 @@ export function LaunchFeed({ trading }) {
     () => [...launches].sort((a, b) => b.score - a.score), [launches]);
   const isPlaceholder = !!MODEL_INFO._note;
   const [expanded, setExpanded] = useState(null);   // mint whose inline chart is open
+  const [onlyActionable, setOnlyActionable] = useState(false);
+  const actionableCount = launches.filter(l =>
+    l.eligibility?.timing === "sustained" && l.eligibility?.passedFilter === 1).length;
 
   // Auto-queue newly-eligible launches that clear the QUALITY gates (deduped) when enabled.
   // Only ELIGIBLE launches (survived the confirmation window, still sellable) are queued —
@@ -134,6 +137,14 @@ export function LaunchFeed({ trading }) {
           {s.autoExecute ? "● AUTO-EXECUTE ON (real buys)" : "○ manual buy (paper-safe)"}
         </span>
         <BurnerWallet trading={trading} />
+        <button onClick={() => setOnlyActionable(v => !v)} style={{
+          background: onlyActionable ? "#00e5c322" : "transparent",
+          border: `1px solid ${onlyActionable ? "#00e5c3" : "var(--border)"}`,
+          color: onlyActionable ? "#00e5c3" : "var(--muted)", borderRadius: 6,
+          padding: "5px 10px", fontSize: "0.6rem", fontFamily: "var(--font-mono)",
+          cursor: "pointer", letterSpacing: "0.04em" }}>
+          ★ ACTIONABLE ONLY {actionableCount > 0 && `(${actionableCount})`}
+        </button>
       </div>
 
       {/* feed */}
@@ -144,10 +155,13 @@ export function LaunchFeed({ trading }) {
               : "Stream not connected."}
           </p>
         )}
-        {ranked.filter(l => l.score >= minScore).map((l) => {
+        {ranked.filter(l => l.score >= minScore &&
+          (!onlyActionable || (l.eligibility?.timing === "sustained" && l.eligibility?.passedFilter === 1)))
+          .map((l) => {
           const e = eligOf(l);
           const canQueue = l.graduated || e.canQueue;   // graduated = definitively alive
           const el = l.eligibility || {};
+          const isActionable = el.timing === "sustained" && el.passedFilter === 1;
           const hasAct = el.trades5m != null;
           const pc = el.priceChange5m ?? 0;
           const pcColor = pc > 0 ? "#00e5c3" : pc < 0 ? "#ff3860" : "var(--muted)";
@@ -156,8 +170,9 @@ export function LaunchFeed({ trading }) {
           <div key={l.mint}>
           <div style={{ display: "grid",
             gridTemplateColumns: "40px 1fr auto auto auto 26px auto", alignItems: "center", gap: 10,
-            padding: "9px 12px", background: "var(--panel, #13171f)",
-            border: "1px solid var(--border)", borderRadius: 8,
+            padding: "9px 12px",
+            background: isActionable ? "#00e5c30f" : "var(--panel, #13171f)",
+            border: `1px solid ${isActionable ? "#00e5c3" : "var(--border)"}`, borderRadius: 8,
             borderBottomLeftRadius: isOpen ? 0 : 8, borderBottomRightRadius: isOpen ? 0 : 8 }}>
             <div style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: "0.9rem",
               color: scoreColor(l.score), textAlign: "center" }}>{l.score}</div>

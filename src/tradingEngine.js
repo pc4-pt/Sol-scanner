@@ -659,7 +659,9 @@ export function shouldTriggerExit(position, currentPrice, opts = {}) {
 
 export const DEFAULT_TRADE_SETTINGS = {
   stakeSOL:           0.1,
-  takeProfitPct:      50,
+  takeProfitPct:      100,        // backstop only — let trailing handle common exits so the
+                                  // fat tail (+100–325%) isn't capped; a low fixed TP would
+                                  // clip the rare runners that carry the strategy's EV
   stopLossPct:        20,
   slippageBps:        200,
   maxPositions:       5,
@@ -717,7 +719,9 @@ export const DEFAULT_TRADE_SETTINGS = {
   breakEvenAtPct:     5,
   // ── Trailing take-profit — KEPT: exit logic, never falsified ─────────────
   trailingEnabled:    true,       // disable fixed TP once trailing activates
-  trailingActivateAt: 30,         // start trailing once position is up this %
+  trailingActivateAt: 18,         // start trailing at +18% — the paper median winner peaks
+                                  // at +26%, so the old +30% activation missed most winners
+                                  // (they peaked and faded before trailing ever engaged)
   trailDrawdownPct:   15,         // exit when peak drops by this %
   // ── Momentum-fade sell signal (first-minutes rollover) ───────────────────
   momentumAutoExit:       false,  // false = show the FADING signal only; true = auto-sell on sustained fade
