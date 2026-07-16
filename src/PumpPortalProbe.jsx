@@ -22,15 +22,17 @@ export function PumpPortalProbe({ trading }) {
     setBusy(true);
     push("info", `${action === "buy" ? "Buying" : "Selling"} ${action === "buy" ? buySol + " SOL of" : "100% of"} ${mint.slice(0, 6)}…`);
     try {
-      const sig = await pumpPortalTrade({
+      const { sig, confirmed, err } = await pumpPortalTrade({
         publicKey: b.publicKey.toBase58(),
         action, mint: mint.trim(),
         amount: action === "buy" ? Number(buySol) : "100%",
         denominatedInSol: action === "buy",
         signTransaction: b.signTransaction,
         connection,
+        onSig: (sig) => push("info", `${action.toUpperCase()} broadcast — confirming…`, sig),
       });
-      push("ok", `${action.toUpperCase()} sent`, sig);
+      if (confirmed) push("ok", `${action.toUpperCase()} confirmed on-chain`, sig);
+      else push("warn", `${action.toUpperCase()} sent but not confirmed (${err || "timeout"}) — check the link`, sig);
     } catch (e) {
       push("err", e.message || String(e));
     } finally {
@@ -94,7 +96,8 @@ export function PumpPortalProbe({ trading }) {
           <div style={{ maxHeight: 150, overflowY: "auto", display: "flex", flexDirection: "column", gap: 5 }}>
             {log.map((e, i) => (
               <div key={i} style={{ fontSize: "0.54rem", lineHeight: 1.4,
-                color: e.kind === "ok" ? "#00e5c3" : e.kind === "err" ? "#ff3860" : "var(--muted2)" }}>
+                color: e.kind === "ok" ? "#00e5c3" : e.kind === "err" ? "#ff3860"
+                  : e.kind === "warn" ? "#f0a500" : "var(--muted2)" }}>
                 {e.text}
                 {e.sig && <> · <a href={`https://solscan.io/tx/${e.sig}`} target="_blank" rel="noreferrer"
                   style={{ color: "var(--accent, #00e5c3)" }}>{e.sig.slice(0, 8)}…</a></>}
