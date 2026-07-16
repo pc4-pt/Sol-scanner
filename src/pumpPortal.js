@@ -5,7 +5,21 @@
 // (pool "auto" picks the right venue), so buy and sell always use the same venue and
 // positions can't get orphaned. We fetch an UNSIGNED transaction, sign it locally with
 // the loaded keypair (no custody handover), and broadcast it ourselves.
-import { VersionedTransaction } from "@solana/web3.js";
+import { VersionedTransaction, PublicKey } from "@solana/web3.js";
+
+// Real SOL balance (for measuring actual spend/receive on the curve, incl. slippage+fees)
+export async function getSolBalance(connection, pubkey) {
+  try { return (await connection.getBalance(pubkey)) / 1e9; } catch { return null; }
+}
+// Total UI token balance held for a mint (to derive the real fill price)
+export async function getTokenBalance(connection, pubkey, mint) {
+  try {
+    const res = await connection.getParsedTokenAccountsByOwner(pubkey, { mint: new PublicKey(mint) });
+    let total = 0;
+    for (const acc of res.value) total += acc.account.data.parsed.info.tokenAmount.uiAmount || 0;
+    return total;
+  } catch { return 0; }
+}
 
 function withTimeout(promise, ms, label) {
   return Promise.race([

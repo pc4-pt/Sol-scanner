@@ -2,12 +2,12 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import {
-  executeBuySwap, executeSellSwap,
-  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd, simulateRoundTrip, fetchTokenActivity, computeTiming,
+  fetchCurrentPrice, calcPnl, shouldTriggerExit, getSolUsd, fetchTokenActivity, computeTiming,
   computeAdaptiveStopLoss,
-  DEFAULT_TRADE_SETTINGS, SOL_MINT, PRICE_POLL_MS,
+  DEFAULT_TRADE_SETTINGS, PRICE_POLL_MS,
 } from "./tradingEngine.js";
 import { checkTokenSafety } from "./safety.js";
+import { pumpPortalTrade, getSolBalance, getTokenBalance } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
 import { logMilestone } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
@@ -298,42 +298,41 @@ export function useTrading() {
     notify(`Getting quote for ${queueItem.symbol}…`, "info");
 
     try {
-      const lamports = Math.round(queueItem.stakeSOL * 1_000_000_000);
+      // ── Native bonding-curve execution via PumpPortal (sole path) ─────────
+      // The old Jupiter round-trip guard is gone: it checked Jupiter routability,
+      // which we no longer use, and would false-block curve tokens. Pump.fun curve
+      // tokens are inherently sellable back to the curve, so the exit is the guard.
+      const solUsd    = await getSolUsd();
+      const solBefore = await getSolBalance(connection, effPublicKey);
 
-      // ── Honeypot / dead-liquidity guard ──────────────────────────────────
-      // Confirm the token can actually be SOLD before we buy it. This is the
-      // guard against getting stuck in an unsellable position.
-      if (settings.preBuySellCheck ?? true) {
-        notify(`Checking ${queueItem.symbol} is sellable…`, "info");
-        const rt = await simulateRoundTrip({
-          tokenMint: queueItem.tokenAddress, amountLamports: lamports,
-          slippageBps: settings.slippageBps,
-        });
-        const minRec = settings.minRoundTripRecovery ?? 0.7;
-        if (!rt.sellable) {
-          notify(`✕ ${queueItem.symbol} blocked — ${rt.reason}`, "warn");
-          setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
-          buyFiringRef.current.delete(queueItem.id);
-          return;
-        }
-        if (rt.recovered < minRec) {
-          notify(`✕ ${queueItem.symbol} blocked — round-trip recovers only `
-            + `${(rt.recovered * 100).toFixed(0)}% (transfer tax or thin liquidity)`, "warn");
-          setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
-          buyFiringRef.current.delete(queueItem.id);
-          return;
-        }
-      }
-
-      const { sig, outAmount, priceImpact, inAmountSol } = await executeBuySwap({
-        inputMint:      SOL_MINT,
-        outputMint:     queueItem.tokenAddress,
-        amountLamports: lamports,
-        slippageBps:    settings.slippageBps,
-        publicKey: effPublicKey,
+      const { sig, confirmed, err } = await pumpPortalTrade({
+        publicKey:       effPublicKey.toBase58(),
+        action:          "buy",
+        mint:            queueItem.tokenAddress,
+        amount:          queueItem.stakeSOL,
+        denominatedInSol: true,
+        slippage:        settings.pumpSlippage ?? 15,
+        priorityFee:     settings.pumpPriorityFee ?? 0.0001,
+        pool:            "auto",
         signTransaction: effSignTransaction,
         connection,
       });
+      if (!confirmed) {
+        notify(`✕ ${queueItem.symbol} buy not confirmed (${err || "timeout"}) — check wallet before retrying`, "warn");
+        setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
+        buyFiringRef.current.delete(queueItem.id);
+        return;
+      }
+
+      // Measure the ACTUAL fill from on-chain balances (captures curve slippage + fees)
+      const solAfter       = await getSolBalance(connection, effPublicKey);
+      const tokensReceived = await getTokenBalance(connection, effPublicKey, queueItem.tokenAddress);
+      const actualSolSpent = (solBefore != null && solAfter != null)
+        ? Math.max(solBefore - solAfter, 0) || queueItem.stakeSOL
+        : queueItem.stakeSOL;
+      const inAmountSol = actualSolSpent;
+      const outAmount   = tokensReceived;
+      const priceImpact = 0;
 
       // Compute adaptive stop loss based on the entry signal's volatility.
       // The user's configured SL is treated as a FLOOR — we only widen for volatile tokens.
@@ -342,14 +341,17 @@ export function useTrading() {
         ? computeAdaptiveStopLoss(entryVol, queueItem.stopLossPct)
         : queueItem.stopLossPct;
 
-      // Entry price: prefer a fresh market price at fill time (unit-consistent with
-      // the monitor's fetchCurrentPrice); fall back to the queued/seeded price. For
-      // launch tokens not yet listed this stays the reserve-based estimate.
+      // Entry price from the ACTUAL fill: SOL spent × SOL/USD ÷ tokens received.
+      // This is the true average curve price (incl. slippage), so realised P&L is
+      // measured against what you actually paid — the point of Step 2. Falls back to
+      // the DexScreener/seeded price if the balance reads didn't return.
       let entryPrice = queueItem.priceUsd || 0;
-      try {
-        const live = await fetchCurrentPrice(queueItem.tokenAddress);
-        if (live) entryPrice = live;
-      } catch { /* keep seeded price */ }
+      if (outAmount > 0 && solUsd > 0) {
+        entryPrice = (actualSolSpent * solUsd) / outAmount;
+      } else {
+        try { const live = await fetchCurrentPrice(queueItem.tokenAddress); if (live) entryPrice = live; }
+        catch { /* keep seeded price */ }
+      }
 
       const position = {
         id:             `pos_${Date.now()}`,
@@ -387,7 +389,7 @@ export function useTrading() {
       const slNote = adaptiveSL !== queueItem.stopLossPct
         ? ` · SL widened to ${adaptiveSL}% (volatility ${entryVol.toFixed(0)})`
         : "";
-      notify(`✓ Bought ${queueItem.symbol} · impact ${priceImpact.toFixed(2)}%${slNote} · tx ${sig.slice(0,8)}…`, "success");
+      notify(`✓ Bought ${queueItem.symbol} · ${inAmountSol.toFixed(4)} SOL${slNote} · tx ${sig.slice(0,8)}…`, "success");
       fireNotification({
         kind: "fill",
         title: `✓ Bought ${queueItem.symbol}`,
@@ -417,10 +419,7 @@ export function useTrading() {
       notify("Wallet not connected", "error");
       return;
     }
-    if (!position.tokensReceived || position.tokensReceived <= 0) {
-      notify(`Cannot sell ${position.symbol}: no token amount recorded`, "error");
-      return;
-    }
+    // Native sell is "100% of holdings" — no recorded token amount needed.
 
     // Synchronous double-fire guard
     if (sellFiringRef.current.has(position.id)) {
@@ -433,17 +432,34 @@ export function useTrading() {
     notify(`Selling ${position.symbol} (${reason})…`, "info");
 
     try {
-      const { sig, solReceived } = await executeSellSwap({
-        tokenMint:      position.tokenAddress,
-        tokenAmount:    position.tokensReceived,
-        slippageBps:    settings.slippageBps,
-        publicKey: effPublicKey,
+      const solBefore = await getSolBalance(connection, effPublicKey);
+      const { sig, confirmed, err } = await pumpPortalTrade({
+        publicKey:       effPublicKey.toBase58(),
+        action:          "sell",
+        mint:            position.tokenAddress,
+        amount:          "100%",
+        denominatedInSol: false,
+        slippage:        settings.pumpSlippage ?? 15,
+        priorityFee:     settings.pumpPriorityFee ?? 0.0001,
+        pool:            "auto",
         signTransaction: effSignTransaction,
         connection,
       });
+      if (!confirmed) {
+        // Native sell didn't confirm — flag stuck so RETRY/ABANDON appears, but note
+        // the sig may still land; do NOT close the position yet.
+        notify(`Sell not confirmed for ${position.symbol} (${err || "timeout"}) — retry or check wallet`, "warn");
+        setPositions(prev => prev.map(p => p.id === position.id
+          ? { ...p, stuck: true, stuckReason: err || "sell not confirmed" } : p));
+        setExecuting(prev => ({ ...prev, [position.id]: false }));
+        sellFiringRef.current.delete(position.id);
+        return;
+      }
+      const solAfter    = await getSolBalance(connection, effPublicKey);
+      const solReceived = (solBefore != null && solAfter != null) ? Math.max(solAfter - solBefore, 0) : 0;
 
       const pnlSol = solReceived - position.solSpent;
-      const pnlPct = (pnlSol / position.solSpent) * 100;
+      const pnlPct = position.solSpent > 0 ? (pnlSol / position.solSpent) * 100 : 0;
       const sign   = pnlSol >= 0 ? "+" : "";
 
       const closed = {
