@@ -11,6 +11,27 @@ import { VersionedTransaction, PublicKey } from "@solana/web3.js";
 export async function getSolBalance(connection, pubkey) {
   try { return (await connection.getBalance(pubkey)) / 1e9; } catch { return null; }
 }
+// Net SOL change for a wallet from a CONFIRMED transaction (positive = received).
+// Read from the tx's pre/post balances — the ground truth, incl. fees — instead of
+// racing live balance snapshots (which mis-measured and produced phantom -100% P&L).
+export async function getTxSolDelta(connection, sig, pubkey) {
+  const target = pubkey.toString();
+  for (let i = 0; i < 8; i++) {
+    try {
+      const tx = await connection.getParsedTransaction(sig, {
+        maxSupportedTransactionVersion: 0, commitment: "confirmed",
+      });
+      if (tx?.meta) {
+        const keys = tx.transaction.message.accountKeys.map(k => (k.pubkey || k).toString());
+        const idx = keys.indexOf(target);
+        if (idx >= 0) return (tx.meta.postBalances[idx] - tx.meta.preBalances[idx]) / 1e9;
+      }
+    } catch { /* not indexed yet */ }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return null;   // caller falls back to an estimate
+}
+
 // Total UI token balance held for a mint (to derive the real fill price)
 export async function getTokenBalance(connection, pubkey, mint) {
   try {

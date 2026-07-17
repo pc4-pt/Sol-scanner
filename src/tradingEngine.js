@@ -6,7 +6,9 @@
 import { VersionedTransaction, PublicKey } from "@solana/web3.js";
 
 export const SOL_MINT      = "So11111111111111111111111111111111111111112";
-export const PRICE_POLL_MS = 15000;
+export const PRICE_POLL_MS = 4000;   // fast position polling — these tokens round-trip huge
+                                     // moves in seconds; a 15s poll let peaks fully reverse
+                                     // before trailing could react
 
 // ── Fetch actual on-chain token balance ────────────────────────────────────
 // Critical for sells: the buy's quote.outAmount may differ from what actually
@@ -617,8 +619,9 @@ export function shouldTriggerExit(position, currentPrice, opts = {}) {
     gracePeriodMs        = 60000,
     breakEvenAt          = 5,
     trailingEnabled      = true,
-    trailingActivateAt   = 30,    // start trailing once up this much
-    trailDrawdownPct     = 15,    // exit when peak drops by this much
+    trailingActivateAt   = 18,    // start trailing once up this much
+    trailDrawdownPct     = 10,    // exit when peak drops by this much (tightened from 15 —
+                                  // 15 gave back far too much on volatile tokens)
   } = opts;
 
   if (!currentPrice || !position.entryPrice) return null;
@@ -665,6 +668,12 @@ export const DEFAULT_TRADE_SETTINGS = {
   takeProfitPct:      100,        // backstop only — let trailing handle common exits so the
                                   // fat tail (+100–325%) isn't capped; a low fixed TP would
                                   // clip the rare runners that carry the strategy's EV
+  // ── Partial profit-taking — bank a chunk early, let the rest run ─────────
+  // Latency-robust: a fixed target fires whenever ANY poll sees price above it, so you
+  // lock in gains on the way UP instead of chasing the top on the way down.
+  partialTpEnabled:   true,
+  partialTpPct:       35,         // take partial profit once up this %
+  partialTpFraction:  0.5,        // sell this fraction; trail the remainder
   stopLossPct:        20,
   slippageBps:        200,
   maxPositions:       5,
@@ -725,7 +734,8 @@ export const DEFAULT_TRADE_SETTINGS = {
   trailingActivateAt: 18,         // start trailing at +18% — the paper median winner peaks
                                   // at +26%, so the old +30% activation missed most winners
                                   // (they peaked and faded before trailing ever engaged)
-  trailDrawdownPct:   15,         // exit when peak drops by this %
+  trailDrawdownPct:   10,         // exit when peak drops by this % (tightened from 15 — real
+                                  // trades gave back most of the peak at 15)
   // ── Momentum-fade sell signal (first-minutes rollover) ───────────────────
   momentumAutoExit:       false,  // false = show the FADING signal only; true = auto-sell on sustained fade
   momentumFadeBuyPressure: 0.42,  // buy pressure below this (with rollover) = fading

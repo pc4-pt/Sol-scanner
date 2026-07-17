@@ -7,7 +7,7 @@ import {
   DEFAULT_TRADE_SETTINGS, PRICE_POLL_MS,
 } from "./tradingEngine.js";
 import { checkTokenSafety } from "./safety.js";
-import { pumpPortalTrade, getSolBalance, getTokenBalance } from "./pumpPortal.js";
+import { pumpPortalTrade, getTokenBalance, getTxSolDelta } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
 import { logMilestone } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
@@ -100,6 +100,7 @@ export function useTrading() {
   // Always-current refs used inside intervals to avoid stale closures
   const positionsRef      = useRef(positions);
   const autoSellFiringRef = useRef(new Set());
+  const partialFiringRef  = useRef(new Set());
   // Synchronous guards against double-fire (state setters are async)
   const buyFiringRef      = useRef(new Set());
   const sellFiringRef     = useRef(new Set());
@@ -303,7 +304,6 @@ export function useTrading() {
       // which we no longer use, and would false-block curve tokens. Pump.fun curve
       // tokens are inherently sellable back to the curve, so the exit is the guard.
       const solUsd    = await getSolUsd();
-      const solBefore = await getSolBalance(connection, effPublicKey);
 
       const { sig, confirmed, err } = await pumpPortalTrade({
         publicKey:       effPublicKey.toBase58(),
@@ -324,12 +324,10 @@ export function useTrading() {
         return;
       }
 
-      // Measure the ACTUAL fill from on-chain balances (captures curve slippage + fees)
-      const solAfter       = await getSolBalance(connection, effPublicKey);
+      // Measure the ACTUAL fill from the confirmed tx (captures curve slippage + fees)
       const tokensReceived = await getTokenBalance(connection, effPublicKey, queueItem.tokenAddress);
-      const actualSolSpent = (solBefore != null && solAfter != null)
-        ? Math.max(solBefore - solAfter, 0) || queueItem.stakeSOL
-        : queueItem.stakeSOL;
+      const solDelta       = await getTxSolDelta(connection, sig, effPublicKey);   // negative on a buy
+      const actualSolSpent = (solDelta != null && solDelta < 0) ? -solDelta : queueItem.stakeSOL;
       const inAmountSol = actualSolSpent;
       const outAmount   = tokensReceived;
       const priceImpact = 0;
@@ -432,7 +430,6 @@ export function useTrading() {
     notify(`Selling ${position.symbol} (${reason})…`, "info");
 
     try {
-      const solBefore = await getSolBalance(connection, effPublicKey);
       const { sig, confirmed, err } = await pumpPortalTrade({
         publicKey:       effPublicKey.toBase58(),
         action:          "sell",
@@ -455,8 +452,12 @@ export function useTrading() {
         sellFiringRef.current.delete(position.id);
         return;
       }
-      const solAfter    = await getSolBalance(connection, effPublicKey);
-      const solReceived = (solBefore != null && solAfter != null) ? Math.max(solAfter - solBefore, 0) : 0;
+      // True SOL received from the confirmed tx (fixes the phantom -100% from racing snapshots)
+      const solDelta    = await getTxSolDelta(connection, sig, effPublicKey);
+      const finalProceeds = (solDelta != null && solDelta > 0) ? solDelta
+        : Math.max((position.currentPrice / (position.entryPrice || position.currentPrice)) * position.solSpent, 0);
+      // total proceeds include any earlier partial take-profit
+      const solReceived = finalProceeds + (position.partialProceeds || 0);
 
       const pnlSol = solReceived - position.solSpent;
       const pnlPct = position.solSpent > 0 ? (pnlSol / position.solSpent) * 100 : 0;
@@ -519,6 +520,44 @@ export function useTrading() {
       sellFiringRef.current.delete(position.id);
     }
   }, [effConnected, effPublicKey, effSignTransaction, connection, settings, notify]);
+
+  // ── Partial profit-take: sell a fraction, keep the position open ───────────
+  // Banks realised SOL early (latency-robust), then the remainder trails for the tail.
+  const executePartialSell = useCallback(async (position, fraction, atPct) => {
+    if (partialFiringRef.current.has(position.id)) return;
+    partialFiringRef.current.add(position.id);
+    try {
+      const pctStr = `${Math.round(fraction * 100)}%`;
+      const { sig, confirmed, err } = await pumpPortalTrade({
+        publicKey:       effPublicKey.toBase58(),
+        action:          "sell",
+        mint:            position.tokenAddress,
+        amount:          pctStr,
+        denominatedInSol: false,
+        slippage:        settings.pumpSlippage ?? 15,
+        priorityFee:     settings.pumpPriorityFee ?? 0.0001,
+        pool:            "auto",
+        signTransaction: effSignTransaction,
+        connection,
+      });
+      if (!confirmed) {
+        notify(`Partial TP not confirmed for ${position.symbol} (${err || "timeout"})`, "warn");
+        return;
+      }
+      const solDelta = await getTxSolDelta(connection, sig, effPublicKey);
+      const proceeds = (solDelta != null && solDelta > 0) ? solDelta : 0;
+      setPositions(prev => prev.map(p => p.id === position.id
+        ? { ...p, partialTaken: true, partialProceeds: (p.partialProceeds || 0) + proceeds,
+            partialPct: atPct }
+        : p));
+      logMilestone(position.tokenAddress, position.symbol, "partial_tp", { price: position.currentPrice });
+      notify(`✓ ${position.symbol} — banked ${pctStr} at +${atPct.toFixed(0)}% (${proceeds.toFixed(4)} SOL)`, "success");
+    } catch (e) {
+      notify(`Partial TP error for ${position.symbol}: ${e.message || e}`, "warn");
+    } finally {
+      partialFiringRef.current.delete(position.id);
+    }
+  }, [effPublicKey, effSignTransaction, connection, settings, notify]);
 
   // ── Price monitor (15s interval) ──────────────────────────────────────────
   // Uses positionsRef (not positions state) to avoid stale closures and
@@ -595,10 +634,22 @@ export function useTrading() {
               : p
           ));
 
+          // ── Partial profit-take: bank a fraction once up partialTpPct, then trail rest ──
+          if ((settings.partialTpEnabled ?? true)
+              && !pos.partialTaken
+              && !partialFiringRef.current.has(pos.id)
+              && (pnl?.pct ?? 0) >= (settings.partialTpPct ?? 35)) {
+            const freshP = positionsRef.current.find(p => p.id === pos.id);
+            if (freshP && freshP.status === "open" && !freshP.stuck && !freshP.partialTaken) {
+              executePartialSell({ ...freshP, currentPrice: price },
+                settings.partialTpFraction ?? 0.5, pnl?.pct ?? 0);
+            }
+          }
+
           if (exit && !autoSellFiringRef.current.has(pos.id)) {
             const freshPos = positionsRef.current.find(p => p.id === pos.id);
             if (!freshPos || freshPos.status !== "open") continue;
-            if (!freshPos.tokensReceived || freshPos.tokensReceived <= 0) continue;
+            // (native sells 100% of remaining holdings — no token-amount precondition)
             // Stuck position: skip auto-sell if it's failed too many times.
             // User must manually retry or abandon via the UI.
             if (freshPos.stuck) continue;

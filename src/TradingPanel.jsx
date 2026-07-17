@@ -671,6 +671,7 @@ function PositionCard({ position, onSell, onRetry, onAbandon, executing, connect
             <div style={{width:3,height:14,borderRadius:1,background:pnlColor,boxShadow:`0 0 5px ${pnlColor}`}}/>
             <Mono color={C.text} size="0.88rem" weight={700}>{position.symbol}</Mono>
             {isGraduated(position.tokenAddress) && <Badge color="#00e5c3">◆ GRADUATED</Badge>}
+            {position.partialTaken && <Badge color="#b8f542">½ BANKED +{Math.round(position.partialPct || 0)}%</Badge>}
             {position.momentum && (() => {
               const m = position.momentum;
               const col = m.signal === "FADING" ? C.red : m.signal === "STRONG" ? C.green : C.muted;
