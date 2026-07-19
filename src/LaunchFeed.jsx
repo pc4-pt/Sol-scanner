@@ -21,7 +21,7 @@ const ELIG = {
   stagnant:  { label: "◷ STAGNANT", color: "#f0a500", canQueue: false },
   collapsed: { label: "✗ COLLAPSED", color: "#ff3860", canQueue: false },
   no_exit:   { label: "✗ NO EXIT",  color: "#ff3860", canQueue: false },
-  no_route:  { label: "… NO ROUTE", color: "#64748b", canQueue: false },
+  no_route:  { label: "…UNLISTED", color: "#64748b", canQueue: false },
 };
 const eligOf = (l) => ELIG[l.eligibility?.state || "pending"] || ELIG.pending;
 const fmtPct = (v) => (v > 0 ? "+" : "") + (v ?? 0).toFixed(0) + "%";
@@ -147,6 +147,33 @@ export function LaunchFeed({ trading }) {
           cursor: "pointer", letterSpacing: "0.04em" }}>
           ★ ACTIONABLE ONLY {actionableCount > 0 && `(${actionableCount})`}
         </button>
+      </div>
+
+      {/* Pipeline diagnostic — shows WHERE tokens are stalling, so a stuck stage is
+          visible immediately instead of appearing as a silently empty feed. */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", margin: "0 0 10px",
+        fontSize: "0.56rem", fontFamily: "var(--font-mono)", color: "var(--muted)" }}>
+        {(() => {
+          const c = {};
+          for (const l of launches) {
+            const st = l.eligibility?.state || "pending";
+            c[st] = (c[st] || 0) + 1;
+          }
+          const sust = launches.filter(l => l.eligibility?.timing === "sustained").length;
+          const order = ["pending", "checking", "no_route", "stagnant", "eligible", "collapsed"];
+          return (
+            <>
+              <span style={{ color: "var(--muted2)" }}>PIPELINE:</span>
+              {order.filter(k => c[k]).map(k => (
+                <span key={k} style={{ color: k === "eligible" ? "#00e5c3" : "var(--muted)" }}>
+                  {k} {c[k]}
+                </span>
+              ))}
+              <span style={{ color: sust ? "#00e5c3" : "var(--muted)" }}>sustained {sust}</span>
+              <span style={{ color: actionableCount ? "#00e5c3" : "var(--muted)" }}>★ {actionableCount}</span>
+            </>
+          );
+        })()}
       </div>
 
       {/* feed */}

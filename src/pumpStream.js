@@ -9,7 +9,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
-import { simulateRoundTrip, fetchTokenActivity, computeTiming } from "./tradingEngine.js";
+import { fetchTokenActivity, computeTiming } from "./tradingEngine.js";
 import { logMilestone, recordPeak, recordFeatures } from "./lifecycleLog.js";
 
 const URL = "wss://pumpportal.fun/api/data";
@@ -87,37 +87,27 @@ export function createPumpStream({ onLaunch, onMigration, onStatus }) {
 //   eligible  — sellable + active (>= minTrades5m) + not collapsed   → queueable
 //   stagnant  — sellable but little/no activity (e.g. a single trade) → NOT queueable
 //   collapsed — price down hard, liquidity drained, or can't recover  → NOT queueable
-//   no_exit   — no sell route (honeypot)      no_route — not tradeable yet
+//   no_route  — not listed on DexScreener yet (keeps polling, NOT terminal)
 // `full` runs the round-trip (sellability); refreshes skip it and reuse `sellable`.
-async function assessLaunch(mint, opts, full, prevSellable) {
-  const { probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct } = opts;
+// ── Assess a launch: is it alive and actually MOVING? ─────────────────────────
+// NOTE: this used to probe Jupiter (simulateRoundTrip) to decide "sellable". That was
+// left over from Jupiter execution and is now WRONG: fresh bonding-curve tokens aren't
+// routable on Jupiter, so every token failed as no_route and nothing ever reached
+// eligible — starving the whole pipeline. We now execute on the curve via PumpPortal,
+// where sellability is inherent, so eligibility is judged purely on live activity.
+// States: eligible | stagnant | collapsed | no_route (not listed yet)
+async function assessLaunch(mint, opts) {
+  const { minTrades5m, minLiqUsd, collapseDropPct } = opts;
   const act = await fetchTokenActivity(mint);
-
-  let sellable = prevSellable, recovered = undefined;
-  if (full || prevSellable == null) {
-    const rt = await simulateRoundTrip({
-      tokenMint: mint, amountLamports: Math.round(probeSol * 1e9), slippageBps: 200,
-    });
-    sellable = rt.sellable; recovered = rt.recovered;
-    if (!rt.sellable) {
-      const noBuy = (rt.reason || "").toLowerCase().includes("buy route");
-      return { state: noBuy ? "no_route" : "no_exit", sellable: false, at: Date.now(),
-               ...(act || {}) };
-    }
-    if (rt.recovered < minRecovery) {
-      return { state: "collapsed", sellable: true, recovered, at: Date.now(), ...(act || {}) };
-    }
+  if (!act) {
+    // Not on DexScreener yet — no observable activity, keep checking.
+    return { state: "no_route", sellable: true, at: Date.now() };
   }
-
-  const base = { sellable, recovered, at: Date.now(), ...(act || {}) };
-  if (act) {
-    if (act.liq > 0 && act.liq < minLiqUsd) return { state: "collapsed", ...base };
-    if (act.priceChange5m <= -collapseDropPct) return { state: "collapsed", ...base };
-    if (act.trades5m < minTrades5m)           return { state: "stagnant",  ...base };
-    return { state: "eligible", ...base };
-  }
-  // sellable but not yet listed on DexScreener → no observable activity yet
-  return { state: "stagnant", ...base };
+  const base = { sellable: true, at: Date.now(), ...act };
+  if (act.liq > 0 && act.liq < minLiqUsd)      return { state: "collapsed", ...base };
+  if (act.priceChange5m <= -collapseDropPct)   return { state: "collapsed", ...base };
+  if (act.trades5m < minTrades5m)              return { state: "stagnant",  ...base };
+  return { state: "eligible", ...base };
 }
 
 // React hook: ranked live feed + connection status + creator-history stats.
@@ -172,7 +162,10 @@ export function useLaunchStream({
   // launches past the confirmation window (terminal dead states are left alone).
   useEffect(() => {
     if (!enabled) return;
-    const TERMINAL = new Set(["no_exit", "no_route", "collapsed"]);
+    // Only "collapsed" is genuinely dead. "no_route" just means not listed on
+    // DexScreener yet — it MUST stay pollable or tokens get written off permanently
+    // before they ever list (which zeroed the pipeline).
+    const TERMINAL = new Set(["collapsed"]);
     const iv = setInterval(() => {
       const c = cfgRef.current;
       const now = Date.now();
@@ -190,7 +183,7 @@ export function useLaunchStream({
           setLaunches((prev) => prev.map((x) =>
             x.mint === l.mint ? { ...x, eligibility: { ...x.eligibility, state: "checking" } } : x));
         }
-        assessLaunch(l.mint, c, first, l.eligibility?.sellable)
+        assessLaunch(l.mint, c)
           .then((res) => setLaunches((prev) => prev.map((x) => {
             if (x.mint !== l.mint) return x;
             // maintain a trend buffer (last ~20 samples ≈ 2 min at 6s polls)
