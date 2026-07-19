@@ -524,6 +524,12 @@ export function useTrading() {
   // ── Partial profit-take: sell a fraction, keep the position open ───────────
   // Banks realised SOL early (latency-robust), then the remainder trails for the tail.
   const executePartialSell = useCallback(async (position, fraction, atPct) => {
+    // Signer guard — same as executeBuy/executeSell. Without this, a dropped wallet
+    // made effPublicKey null and .toBase58() threw mid-trade.
+    if (!effConnected || !effPublicKey || !effSignTransaction) {
+      notify(`Partial TP skipped for ${position.symbol} — wallet not connected`, "warn");
+      return;
+    }
     if (partialFiringRef.current.has(position.id)) return;
     partialFiringRef.current.add(position.id);
     try {
@@ -557,7 +563,7 @@ export function useTrading() {
     } finally {
       partialFiringRef.current.delete(position.id);
     }
-  }, [effPublicKey, effSignTransaction, connection, settings, notify]);
+  }, [effConnected, effPublicKey, effSignTransaction, connection, settings, notify]);
 
   // ── Price monitor (15s interval) ──────────────────────────────────────────
   // Uses positionsRef (not positions state) to avoid stale closures and
@@ -636,6 +642,7 @@ export function useTrading() {
 
           // ── Partial profit-take: bank a fraction once up partialTpPct, then trail rest ──
           if ((settings.partialTpEnabled ?? true)
+              && effConnected && effPublicKey
               && !pos.partialTaken
               && !partialFiringRef.current.has(pos.id)
               && (pnl?.pct ?? 0) >= (settings.partialTpPct ?? 35)) {
@@ -646,7 +653,7 @@ export function useTrading() {
             }
           }
 
-          if (exit && !autoSellFiringRef.current.has(pos.id)) {
+          if (exit && effConnected && effPublicKey && !autoSellFiringRef.current.has(pos.id)) {
             const freshPos = positionsRef.current.find(p => p.id === pos.id);
             if (!freshPos || freshPos.status !== "open") continue;
             // (native sells 100% of remaining holdings — no token-amount precondition)

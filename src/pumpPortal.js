@@ -15,6 +15,7 @@ export async function getSolBalance(connection, pubkey) {
 // Read from the tx's pre/post balances — the ground truth, incl. fees — instead of
 // racing live balance snapshots (which mis-measured and produced phantom -100% P&L).
 export async function getTxSolDelta(connection, sig, pubkey) {
+  if (!connection || !sig || !pubkey) return null;
   const target = pubkey.toString();
   for (let i = 0; i < 8; i++) {
     try {

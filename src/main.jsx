@@ -6,6 +6,7 @@ import { PhantomWalletAdapter } from "@solana/wallet-adapter-phantom";
 import { SolflareWalletAdapter } from "@solana/wallet-adapter-solflare";
 import "@solana/wallet-adapter-react-ui/styles.css";
 import App from "./App.jsx";
+import { ErrorBoundary } from "./ErrorBoundary.jsx";
 
 // Wallet adapter CSS override — match our dark theme
 const walletStyles = `
@@ -36,7 +37,9 @@ function Root() {
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
           <style>{walletStyles}</style>
-          <App />
+          <ErrorBoundary>
+            <App />
+          </ErrorBoundary>
         </WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>

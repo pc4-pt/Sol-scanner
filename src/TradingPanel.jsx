@@ -851,6 +851,14 @@ export function TradingPanel({ trading, solBalance }) {
         input:focus{outline:none}
       `}</style>
 
+      {!canTrade && positions.length > 0 && (
+        <div style={{ margin: "10px 0", padding: "9px 12px", borderRadius: 8,
+          background: "#ff386014", border: "1px solid #ff3860", color: "#ff8fa6",
+          fontSize: "0.66rem", fontFamily: C.mono, lineHeight: 1.5 }}>
+          ⚠ WALLET NOT CONNECTED — {positions.length} open position{positions.length > 1 ? "s" : ""} cannot
+          be auto-sold. Reconnect (or reload the burner key) to resume exits, or sell manually.
+        </div>
+      )}
       <WalletBar connected={connected} walletAddress={walletAddress} solBalance={solBalance} burner={trading.burner}/>
       <StatsBar stats={stats}/>
 
