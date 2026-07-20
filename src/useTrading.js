@@ -9,7 +9,7 @@ import {
 import { checkTokenSafety } from "./safety.js";
 import { pumpPortalTrade, getTokenBalance, getTxSolDelta } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
-import { logMilestone } from "./lifecycleLog.js";
+import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
@@ -305,6 +305,31 @@ export function useTrading() {
       // tokens are inherently sellable back to the curve, so the exit is the guard.
       const solUsd    = await getSolUsd();
 
+      // ── ENTRY HEADROOM GATE ──────────────────────────────────────────────
+      // The 07-20 data showed the losing trades were bought AT or ABOVE the peak:
+      // entries with <20% headroom went 0/6 (−233%), entries with >20% headroom went
+      // 2/4 (+43%). The filter finds tokens that run ~24% median FROM THE SUSTAINED
+      // TRIGGER — so if price has already run past that, the remaining upside is gone.
+      // Refuse the buy when the run-up above the sustained price is too large.
+      if (settings.entryHeadroomEnabled ?? true) {
+        const sustainedPrice = getMilestonePrice(queueItem.tokenAddress, "sustained");
+        let livePrice = null;
+        try { livePrice = await fetchCurrentPrice(queueItem.tokenAddress); } catch { /* ignore */ }
+        if (sustainedPrice > 0 && livePrice > 0) {
+          const dragPct = ((livePrice - sustainedPrice) / sustainedPrice) * 100;
+          const maxDrag = settings.maxEntryDragPct ?? 18;
+          if (dragPct > maxDrag) {
+            notify(`✕ ${queueItem.symbol} skipped — already ran +${dragPct.toFixed(0)}% `
+              + `above trigger (max ${maxDrag}%); no headroom left`, "warn");
+            logMilestone(queueItem.tokenAddress, queueItem.symbol, "skipped_drag", { price: livePrice });
+            setQueue(prev => prev.filter(q => q.id !== queueItem.id));
+            setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
+            buyFiringRef.current.delete(queueItem.id);
+            return;
+          }
+        }
+      }
+
       const { sig, confirmed, err } = await pumpPortalTrade({
         publicKey:       effPublicKey.toBase58(),
         action:          "buy",
@@ -457,11 +482,18 @@ export function useTrading() {
     try {
       const { sig, confirmed, err, slippageUsed } = await nativeSell(position.tokenAddress, "100%");
       if (!confirmed) {
-        // Native sell didn't confirm — flag stuck so RETRY/ABANDON appears, but note
-        // the sig may still land; do NOT close the position yet.
-        notify(`Sell failed for ${position.symbol}: ${err || "unconfirmed"} — retry or check wallet`, "warn");
-        setPositions(prev => prev.map(p => p.id === position.id
-          ? { ...p, stuck: true, stuckReason: String(err || "sell not confirmed").slice(0, 140) } : p));
+        // Exit didn't confirm (likely slippage at the capped ladder). Count it and
+        // let the monitor retry on the next poll; only mark stuck after repeated
+        // failures, so one bad fill attempt doesn't strand the position.
+        const c = (sellFailCountRef.current.get(position.id) || 0) + 1;
+        sellFailCountRef.current.set(position.id, c);
+        const giveUp = c >= 3;
+        notify(`Sell attempt ${c} failed for ${position.symbol}: ${err || "unconfirmed"}`
+          + (giveUp ? " — marked stuck" : " — retrying"), "warn");
+        if (giveUp) {
+          setPositions(prev => prev.map(p => p.id === position.id
+            ? { ...p, stuck: true, stuckReason: String(err || "sell not confirmed").slice(0, 140) } : p));
+        }
         setExecuting(prev => ({ ...prev, [position.id]: false }));
         sellFiringRef.current.delete(position.id);
         return;

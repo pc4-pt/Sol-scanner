@@ -664,9 +664,15 @@ export const DEFAULT_TRADE_SETTINGS = {
   stakeSOL:           0.1,
   // ── Native execution (PumpPortal, sole path for launch trades) ───────────
   pumpSlippage:       15,         // percent slippage allowed on the bonding curve
-  sellSlippageLadder: [15, 25, 40, 60],  // exits escalate through these — a fixed 15%
-                                  // fails on-chain when price moves mid-transaction
+  // Exit slippage ladder — capped at 25%. The old [15,25,40,60] ladder DID complete
+  // exits, but filled so badly that a 20% stop realised −50 to −60%. Better to fail
+  // an exit and retry than to dump at 60% slippage.
+  sellSlippageLadder: [15, 25],
   pumpPriorityFee:    0.0001,     // SOL priority fee per trade
+  // ── Entry headroom gate ──────────────────────────────────────────────────
+  // Refuse buys where price has already run this far above the sustained trigger.
+  entryHeadroomEnabled: true,
+  maxEntryDragPct:      18,       // skip if run-up above trigger exceeds this %
   takeProfitPct:      100,        // backstop only — let trailing handle common exits so the
                                   // fat tail (+100–325%) isn't capped; a low fixed TP would
                                   // clip the rare runners that carry the strategy's EV

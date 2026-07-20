@@ -73,6 +73,12 @@ export function recordPeak(mint, symbol, { peakPct, timeToPeakS, trackedS, drawd
 }
 
 export function getLog() { return Object.values(load()); }
+
+// Price recorded at a given milestone (used by the entry headroom gate to measure
+// how far a token has already run above its sustained trigger price).
+export function getMilestonePrice(mint, milestone = "sustained") {
+  try { return load()[mint]?.prices?.[milestone] ?? null; } catch { return null; }
+}
 export function clearLog() { cache = {}; save(); }
 
 // Derived per-token row (seconds between milestones + price moves between them)
