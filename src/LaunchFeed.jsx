@@ -67,7 +67,9 @@ export function LaunchFeed({ trading }) {
   const [expanded, setExpanded] = useState(null);   // mint whose inline chart is open
   const [onlyActionable, setOnlyActionable] = useState(false);
   const actionableCount = launches.filter(l =>
-    l.eligibility?.timing === "sustained" && l.eligibility?.passedFilter === 1).length;
+    l.eligibility?.timing === "sustained" && l.eligibility?.passedFilter === 1
+    && l.eligibility?.sustainedSince
+    && Date.now() - l.eligibility.sustainedSince >= (s.minSustainedAgeSec ?? 75) * 1000).length;
 
   // Auto-queue newly-eligible launches that clear the QUALITY gates (deduped) when enabled.
   // Only ELIGIBLE launches (survived the confirmation window, still sellable) are queued —
@@ -78,10 +80,16 @@ export function LaunchFeed({ trading }) {
     const minExec = s.minExecScore ?? 68;
     const minDev  = s.minDevSol ?? 1.0;
     const millN   = s.millMinLaunches ?? 5;
+    const minAgeMs = (s.minSustainedAgeSec ?? 75) * 1000;
+    const now = Date.now();
     for (const l of launches) {
       if (seen.current.has(l.mint)) continue;
       if (l.eligibility?.state !== "eligible") continue;          // survival gate
       if (l.eligibility?.timing !== "sustained") continue;       // sustained-momentum gate
+      // persistence gate — must have held sustained continuously for minSustainedAgeSec.
+      // Data: tokens fading inside 90s hit +20% only 17-30%; those holding 90-300s hit 60%.
+      const since = l.eligibility?.sustainedSince;
+      if (!since || now - since < minAgeMs) continue;
       if (l.eligibility?.passedFilter !== 1) continue;           // actionable filter (non-mayhem + pcH1 + volH1)
       if (l.score < minExec) continue;
       if ((l.devSol ?? 0) < minDev) continue;
@@ -224,7 +232,16 @@ export function LaunchFeed({ trading }) {
                         };
                         const [c2, lbl] = map[el.timing] || ["var(--muted)", ""];
                         const star = el.timing === "sustained" && el.passedFilter === 1;
-                        return lbl ? <span style={{ color: c2, fontWeight: 700 }}>{" · "}{star ? "★" : ""}{lbl}</span> : null;
+                        // maturity countdown — shows the persistence gate filling
+                        let mat = null;
+                        if (el.timing === "sustained" && el.sustainedSince) {
+                          const need = s.minSustainedAgeSec ?? 75;
+                          const age = Math.floor((Date.now() - el.sustainedSince) / 1000);
+                          mat = age >= need ? " READY" : ` ${age}/${need}s`;
+                        }
+                        return lbl ? <span style={{ color: c2, fontWeight: 700 }}>
+                          {" · "}{star ? "★" : ""}{lbl}{mat && <span style={{
+                            color: mat === " READY" ? "#00e5c3" : "var(--muted)" }}>{mat}</span>}</span> : null;
                       })()}
                     </>
                   : <span style={{ color: "var(--muted)" }}>{new Date(l.ts).toLocaleTimeString()}</span>}

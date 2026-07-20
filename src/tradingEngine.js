@@ -673,6 +673,10 @@ export const DEFAULT_TRADE_SETTINGS = {
   // Refuse buys where price has already run this far above the sustained trigger.
   entryHeadroomEnabled: true,
   maxEntryDragPct:      18,       // skip if run-up above trigger exceeds this %
+  // ── Sustained persistence gate ───────────────────────────────────────────
+  // Token must hold sustained CONTINUOUSLY this long before it can be queued.
+  // Data: fading inside 90s → 17-30% hit +20%; holding 90-300s → 60%.
+  minSustainedAgeSec:   75,
   takeProfitPct:      100,        // backstop only — let trailing handle common exits so the
                                   // fat tail (+100–325%) isn't capped; a low fixed TP would
                                   // clip the rare runners that carry the strategy's EV

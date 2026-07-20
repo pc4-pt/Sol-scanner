@@ -197,6 +197,11 @@ export function useLaunchStream({
             // lifecycle logging (first occurrence of each milestone is recorded)
             if (res.state === "eligible")  logMilestone(x.mint, x.symbol, "eligible", { score: x.score, devSol: x.devSol, price: res.priceUsd });
             if (res.state === "collapsed") logMilestone(x.mint, x.symbol, "collapsed", { price: res.priceUsd });
+            // Continuous sustained clock: set when sustained begins, cleared the moment
+            // it stops being sustained. Auto-queue requires this to reach minSustainedAgeSec,
+            // so brief flashes (which the data shows are mostly duds) never get queued.
+            const prevSince = x.eligibility?.sustainedSince ?? null;
+            const sustainedSince = timing === "sustained" ? (prevSince || Date.now()) : null;
             if (timing === "sustained") {
               logMilestone(x.mint, x.symbol, "sustained", { price: res.priceUsd });
               // liquidity: DexScreener usd is often empty for fresh pump pairs — fall
@@ -240,7 +245,8 @@ export function useLaunchStream({
             }
             if (timing === "fading")       logMilestone(x.mint, x.symbol, "fading", { price: res.priceUsd });
             return { ...x, trend, eligibility: { ...res, timing, buyPressure: bp,
-              passedFilter: res._passedFilter ?? x.eligibility?.passedFilter } };
+              passedFilter: res._passedFilter ?? x.eligibility?.passedFilter,
+              sustainedSince } };
           })))
           .catch(() => {});
       }
