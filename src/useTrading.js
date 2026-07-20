@@ -412,6 +412,31 @@ export function useTrading() {
   }, [effConnected, effPublicKey, effSignTransaction, connection, positions, settings, notify]);
 
   // ── Execute sell ──────────────────────────────────────────────────────────
+  // ── Native sell with escalating slippage ──────────────────────────────────
+  // These tokens move fast; a fixed 15% slippage fails on-chain mid-drop. Escalate
+  // like the old Jupiter path did, so an exit isn't abandoned because price moved.
+  const nativeSell = useCallback(async (mint, amountStr) => {
+    const ladder = settings.sellSlippageLadder ?? [15, 25, 40, 60];
+    let last = null;
+    for (const slip of ladder) {
+      const r = await pumpPortalTrade({
+        publicKey:        effPublicKey.toBase58(),
+        action:           "sell",
+        mint,
+        amount:           amountStr,
+        denominatedInSol: false,
+        slippage:         slip,
+        priorityFee:      settings.pumpPriorityFee ?? 0.0001,
+        pool:             "auto",
+        signTransaction:  effSignTransaction,
+        connection,
+      });
+      last = { ...r, slippageUsed: slip };
+      if (r.confirmed) return last;
+    }
+    return last || { confirmed: false, err: "no attempt made" };
+  }, [effPublicKey, effSignTransaction, connection, settings]);
+
   const executeSell = useCallback(async (position, reason = "MANUAL") => {
     if (!effConnected || !effPublicKey || !effSignTransaction) {
       notify("Wallet not connected", "error");
@@ -430,24 +455,13 @@ export function useTrading() {
     notify(`Selling ${position.symbol} (${reason})…`, "info");
 
     try {
-      const { sig, confirmed, err } = await pumpPortalTrade({
-        publicKey:       effPublicKey.toBase58(),
-        action:          "sell",
-        mint:            position.tokenAddress,
-        amount:          "100%",
-        denominatedInSol: false,
-        slippage:        settings.pumpSlippage ?? 15,
-        priorityFee:     settings.pumpPriorityFee ?? 0.0001,
-        pool:            "auto",
-        signTransaction: effSignTransaction,
-        connection,
-      });
+      const { sig, confirmed, err, slippageUsed } = await nativeSell(position.tokenAddress, "100%");
       if (!confirmed) {
         // Native sell didn't confirm — flag stuck so RETRY/ABANDON appears, but note
         // the sig may still land; do NOT close the position yet.
-        notify(`Sell not confirmed for ${position.symbol} (${err || "timeout"}) — retry or check wallet`, "warn");
+        notify(`Sell failed for ${position.symbol}: ${err || "unconfirmed"} — retry or check wallet`, "warn");
         setPositions(prev => prev.map(p => p.id === position.id
-          ? { ...p, stuck: true, stuckReason: err || "sell not confirmed" } : p));
+          ? { ...p, stuck: true, stuckReason: String(err || "sell not confirmed").slice(0, 140) } : p));
         setExecuting(prev => ({ ...prev, [position.id]: false }));
         sellFiringRef.current.delete(position.id);
         return;
@@ -534,20 +548,9 @@ export function useTrading() {
     partialFiringRef.current.add(position.id);
     try {
       const pctStr = `${Math.round(fraction * 100)}%`;
-      const { sig, confirmed, err } = await pumpPortalTrade({
-        publicKey:       effPublicKey.toBase58(),
-        action:          "sell",
-        mint:            position.tokenAddress,
-        amount:          pctStr,
-        denominatedInSol: false,
-        slippage:        settings.pumpSlippage ?? 15,
-        priorityFee:     settings.pumpPriorityFee ?? 0.0001,
-        pool:            "auto",
-        signTransaction: effSignTransaction,
-        connection,
-      });
+      const { sig, confirmed, err, slippageUsed } = await nativeSell(position.tokenAddress, pctStr);
       if (!confirmed) {
-        notify(`Partial TP not confirmed for ${position.symbol} (${err || "timeout"})`, "warn");
+        notify(`Partial TP failed for ${position.symbol}: ${err || "unconfirmed"}`, "warn");
         return;
       }
       const solDelta = await getTxSolDelta(connection, sig, effPublicKey);
@@ -653,7 +656,9 @@ export function useTrading() {
             }
           }
 
-          if (exit && effConnected && effPublicKey && !autoSellFiringRef.current.has(pos.id)) {
+          if (exit && effConnected && effPublicKey
+              && !autoSellFiringRef.current.has(pos.id)
+              && !partialFiringRef.current.has(pos.id)) {   // don't collide with an in-flight partial
             const freshPos = positionsRef.current.find(p => p.id === pos.id);
             if (!freshPos || freshPos.status !== "open") continue;
             // (native sells 100% of remaining holdings — no token-amount precondition)

@@ -664,6 +664,8 @@ export const DEFAULT_TRADE_SETTINGS = {
   stakeSOL:           0.1,
   // ── Native execution (PumpPortal, sole path for launch trades) ───────────
   pumpSlippage:       15,         // percent slippage allowed on the bonding curve
+  sellSlippageLadder: [15, 25, 40, 60],  // exits escalate through these — a fixed 15%
+                                  // fails on-chain when price moves mid-transaction
   pumpPriorityFee:    0.0001,     // SOL priority fee per trade
   takeProfitPct:      100,        // backstop only — let trailing handle common exits so the
                                   // fat tail (+100–325%) isn't capped; a low fixed TP would

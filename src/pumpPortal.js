@@ -43,6 +43,14 @@ export async function getTokenBalance(connection, pubkey, mint) {
   } catch { return 0; }
 }
 
+// Solana errors are often objects ({InstructionError:[1,{Custom:6002}]}). Stringify
+// them or they surface as "[object Object]" and hide the real cause.
+export function fmtErr(e) {
+  if (e == null) return null;
+  if (typeof e === "string") return e;
+  try { return JSON.stringify(e); } catch { return String(e); }
+}
+
 function withTimeout(promise, ms, label) {
   return Promise.race([
     promise,
@@ -95,10 +103,10 @@ export async function pumpPortalTrade({
       connection.confirmTransaction({ signature: sig, ...latest }, "confirmed"),
       35000, "confirmation",
     );
-    err = r?.value?.err || null;
+    err = fmtErr(r?.value?.err);   // on-chain errors are objects — stringify or they log as [object Object]
     confirmed = !err;
   } catch (e) {
-    err = e.message;   // timed out or RPC hiccup — sig may still be valid
+    err = fmtErr(e?.message || e);   // timed out or RPC hiccup — sig may still be valid
   }
   return { sig, confirmed, err };
 }
