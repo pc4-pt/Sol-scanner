@@ -61,7 +61,7 @@ export function recordFeatures(mint, symbol, features) {
 
 // Passive paper result: the max a token reached AFTER hitting sustained, whether or
 // not it was bought. This is the opportunity distribution — does upside actually follow?
-export function recordPeak(mint, symbol, { peakPct, timeToPeakS, trackedS, drawdownAfterPeak }) {
+export function recordPeak(mint, symbol, { peakPct, timeToPeakS, trackedS, drawdownAfterPeak, dragAtReady, upsideFromReady }) {
   if (!mint) return;
   const db = load();
   if (!db[mint]) db[mint] = { mint, symbol: symbol || "?", events: {}, prices: {}, data: {} };
@@ -69,6 +69,8 @@ export function recordPeak(mint, symbol, { peakPct, timeToPeakS, trackedS, drawd
   db[mint].data.timeToPeakS = timeToPeakS;
   db[mint].data.trackedS = trackedS;
   if (drawdownAfterPeak != null) db[mint].data.drawdownAfterPeak = drawdownAfterPeak;
+  if (dragAtReady != null) db[mint].data.dragAtReady = dragAtReady;
+  if (upsideFromReady != null) db[mint].data.upsideFromReady = upsideFromReady;
   save();
 }
 
@@ -101,6 +103,9 @@ export function deriveRow(t) {
     upside_pct:      t.data?.peakPct ?? "",           // sustained → peak (the opportunity)
     time_to_peak_s:  t.data?.timeToPeakS ?? "",
     dd_after_peak:   t.data?.drawdownAfterPeak ?? "", // how fast it gave back after peak
+    // ready-point metrics: what the persistence gate actually costs and leaves
+    drag_at_ready:     t.data?.dragAtReady ?? "",      // run-up from sustained → gate open
+    upside_from_ready: t.data?.upsideFromReady ?? "",  // capturable upside from gate open
     tracked_s:       t.data?.trackedS ?? "",
     // ── feature snapshot at the sustained moment (for runner-vs-dud analysis) ──
     f_devSol:        t.data?.f_devSol ?? "",

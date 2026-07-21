@@ -118,6 +118,7 @@ export function useLaunchStream({
   minTrades5m = 4, minLiqUsd = 400, collapseDropPct = 40,
   sustainSec = 90, minSamples = 4,
   minSustainScore = 60,
+  minSustainedAgeSec = 75,
   minSustainPcH1 = 40, minSustainVolH1 = 1500,
   validateMinScore = 40,
 } = {}) {
@@ -254,7 +255,7 @@ export function useLaunchStream({
     return () => clearInterval(iv);
   }, [enabled]);
 
-  usePeakTracker(trackRef, enabled);
+  usePeakTracker(trackRef, enabled, minSustainedAgeSec);
 
   const clear = useCallback(() => setLaunches([]), []);
   return { launches, status, stats, migrations, clear };
@@ -264,7 +265,9 @@ export function useLaunchStream({
 // to record the max upside that followed — a paper-trade dataset for whether the
 // opportunity is real. Uses DexScreener only (no Jupiter load). Defined as a hook
 // helper so it shares the trackRef populated when tokens hit sustained.
-function usePeakTracker(trackRef, enabled) {
+function usePeakTracker(trackRef, enabled, minReadySec = 75) {
+  const readyRef = useRef(minReadySec);
+  useEffect(() => { readyRef.current = minReadySec; }, [minReadySec]);
   useEffect(() => {
     if (!enabled) return;
     const MAX_TRACK_S = 900;        // follow each token up to 15 min after sustained
@@ -281,16 +284,33 @@ function usePeakTracker(trackRef, enabled) {
         try { const act = await fetchTokenActivity(mint); price = act?.priceUsd || null; } catch {}
         if (price && price > t.peakPrice) { t.peakPrice = price; t.peakTime = now; }
         if (price) t.lastPrice = price;
+
+        // ── READY-POINT instrumentation ──────────────────────────────────
+        // Capture price at the moment the persistence gate would let us buy, and
+        // track the peak from THAT point. This is what sets the real drag threshold:
+        // drag_at_ready = how far it ran before we could act;
+        // upside_from_ready = what was actually still capturable at entry.
+        if (price && !t.readyPrice && now - t.sustainedTime >= readyRef.current * 1000) {
+          t.readyPrice = price; t.readyTime = now; t.peakAfterReady = price;
+        }
+        if (price && t.readyPrice && price > (t.peakAfterReady || 0)) t.peakAfterReady = price;
+
         const agedOut = now - t.startedAt > MAX_TRACK_S * 1000;
         const collapsed = price && price < t.sustainedPrice * COLLAPSE_FRAC;
         if (agedOut || collapsed) {
           const peakPct = t.sustainedPrice > 0 ? ((t.peakPrice - t.sustainedPrice) / t.sustainedPrice) * 100 : 0;
           const ddAfterPeak = t.peakPrice > 0 ? ((t.lastPrice - t.peakPrice) / t.peakPrice) * 100 : 0;
+          const dragAtReady = (t.readyPrice && t.sustainedPrice > 0)
+            ? ((t.readyPrice - t.sustainedPrice) / t.sustainedPrice) * 100 : null;
+          const upsideFromReady = (t.readyPrice > 0 && t.peakAfterReady)
+            ? ((t.peakAfterReady - t.readyPrice) / t.readyPrice) * 100 : null;
           recordPeak(mint, t.symbol, {
             peakPct: +peakPct.toFixed(1),
             timeToPeakS: Math.round((t.peakTime - t.sustainedTime) / 1000),
             trackedS: Math.round((now - t.startedAt) / 1000),
             drawdownAfterPeak: +ddAfterPeak.toFixed(1),
+            dragAtReady: dragAtReady == null ? null : +dragAtReady.toFixed(1),
+            upsideFromReady: upsideFromReady == null ? null : +upsideFromReady.toFixed(1),
           });
           map.delete(mint);
         }
