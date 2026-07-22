@@ -102,6 +102,7 @@ export function LifecycleLog() {
         <Stat label="your peak" value={fmtPct(s.rvp_yourPeak)} sub="max up from entry" />
         <Stat label="realised" value={fmtPct(s.rvp_realised)} sub="what you kept" />
         <Stat label="capture" value={s.rvp_capture == null ? "—" : `${Math.round(s.rvp_capture * 100)}%`} sub="realised ÷ your peak" />
+        <Stat label="peaked after exit" value={s.exitedEarly == null ? "—" : `${Math.round(s.exitedEarly * 100)}%`} sub="exited too early" />
       </div>
       <p style={{ fontSize: "0.58rem", color: "var(--muted)", marginBottom: 16, lineHeight: 1.5 }}>
         paper peak → your peak gap = entry timing cost · your peak → realised gap = exit efficiency.

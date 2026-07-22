@@ -103,6 +103,17 @@ export function deriveRow(t) {
     upside_pct:      t.data?.peakPct ?? "",           // sustained → peak (the opportunity)
     time_to_peak_s:  t.data?.timeToPeakS ?? "",
     dd_after_peak:   t.data?.drawdownAfterPeak ?? "", // how fast it gave back after peak
+    // did the token peak AFTER we exited? (exit-too-early vs entry-too-late diagnosis)
+    peaked_after_exit: (() => {
+      if (e.sold == null || e.sustained == null || t.data?.timeToPeakS == null) return "";
+      const peakAt = e.sustained + t.data.timeToPeakS * 1000;
+      return peakAt > e.sold ? "yes" : "no";
+    })(),
+    peak_after_exit_s: (() => {
+      if (e.sold == null || e.sustained == null || t.data?.timeToPeakS == null) return "";
+      const gap = (e.sustained + t.data.timeToPeakS * 1000 - e.sold) / 1000;
+      return gap > 0 ? Math.round(gap) : "";
+    })(),
     // ready-point metrics: what the persistence gate actually costs and leaves
     drag_at_ready:     t.data?.dragAtReady ?? "",      // run-up from sustained → gate open
     upside_from_ready: t.data?.upsideFromReady ?? "",  // capturable upside from gate open
@@ -207,6 +218,12 @@ export function summary() {
     rvp_yourPeak:  avg(sold, "peakPnlPct"),     // max you were up from YOUR entry
     rvp_realised:  avg(sold, "pnlPct"),         // what you actually closed at
     rvp_entryDrag: avg(sold, "slip_to_buy_pct"),// run-up you paid before entering
+    // exit diagnosis: share of closed trades where the peak came AFTER the exit
+    exitedEarly: (() => {
+      const g = rows.filter(r => r.peaked_after_exit === "yes" || r.peaked_after_exit === "no");
+      if (!g.length) return null;
+      return g.filter(r => r.peaked_after_exit === "yes").length / g.length;
+    })(),
     rvp_capture: (() => {
       const g = sold.filter(r => Number(r.peakPnlPct) > 0);
       if (!g.length) return null;

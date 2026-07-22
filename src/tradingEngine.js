@@ -681,7 +681,10 @@ export const DEFAULT_TRADE_SETTINGS = {
   // ── Sustained persistence gate ───────────────────────────────────────────
   // Token must hold sustained CONTINUOUSLY this long before it can be queued.
   // Data: fading inside 90s → 17-30% hit +20%; holding 90-300s → 60%.
-  minSustainedAgeSec:   75,
+  minSustainedAgeSec:   30,       // TEST VALUE (was 75): measures drag_at_ready and
+                                  // upside_from_ready at 30s. 75s showed ~0% median forward
+                                  // upside — this checks whether a shorter wait recovers a
+                                  // human-tradeable entry, or whether the edge is gone by 30s too.
   takeProfitPct:      100,        // backstop only — let trailing handle common exits so the
                                   // fat tail (+100–325%) isn't capped; a low fixed TP would
                                   // clip the rare runners that carry the strategy's EV
