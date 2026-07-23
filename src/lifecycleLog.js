@@ -27,10 +27,41 @@ function load() {
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch {} }
 
+const MAX_TOKENS = 3000;
+
+// A row is worth keeping if it reached sustained, was queued/traded, or has a paper
+// result. Rows that only ever hit "eligible" are noise — ~1,900/day of them — and are
+// what we evict first. Previously the cap deleted the OLDEST key on EVERY write
+// (including repeat writes for existing tokens), so the constant eligible-poll traffic
+// destroyed sustained/paper rows within hours: a day's tracking collapsed to 5 rows.
+function isValuable(row) {
+  const e = row?.events || {}, d = row?.data || {};
+  return !!(e.sustained || e.queued || e.bought || e.sold || d.peakPct != null || d.f_captured);
+}
+
+function prune(db) {
+  const keys = Object.keys(db);
+  let over = keys.length - MAX_TOKENS;
+  if (over <= 0) return;
+  // 1) drop disposable rows, oldest first
+  for (const k of keys) {
+    if (over <= 0) break;
+    if (!isValuable(db[k])) { delete db[k]; over--; }
+  }
+  // 2) only if still over, drop oldest valuable rows
+  if (over > 0) {
+    for (const k of Object.keys(db)) {
+      if (over <= 0) break;
+      delete db[k]; over--;
+    }
+  }
+}
+
 export function logMilestone(mint, symbol, milestone, data = {}) {
   if (!mint) return;
   const db = load();
-  if (!db[mint]) db[mint] = { mint, symbol: symbol || "?", events: {}, prices: {}, data: {} };
+  const isNew = !db[mint];
+  if (isNew) db[mint] = { mint, symbol: symbol || "?", events: {}, prices: {}, data: {} };
   if (!db[mint].prices) db[mint].prices = {};
   if (symbol && db[mint].symbol === "?") db[mint].symbol = symbol;
   // "fading" is only meaningful AFTER "sustained" — guard against a fade that was
@@ -42,9 +73,7 @@ export function logMilestone(mint, symbol, milestone, data = {}) {
     if (data.price != null && db[mint].prices[milestone] == null) db[mint].prices[milestone] = data.price;
   }
   Object.assign(db[mint].data, data);
-  // cap total tracked tokens
-  const keys = Object.keys(db);
-  if (keys.length > 3000) delete db[keys[0]];
+  if (isNew) prune(db);   // only prune when the store actually grows
   save();
 }
 
