@@ -441,7 +441,7 @@ export function useTrading() {
   // These tokens move fast; a fixed 15% slippage fails on-chain mid-drop. Escalate
   // like the old Jupiter path did, so an exit isn't abandoned because price moved.
   const nativeSell = useCallback(async (mint, amountStr) => {
-    const ladder = settings.sellSlippageLadder ?? [15, 25, 40, 60];
+    const ladder = settings.sellSlippageLadder ?? [15, 25];
     let last = null;
     for (const slip of ladder) {
       const r = await pumpPortalTrade({

@@ -672,12 +672,9 @@ export const DEFAULT_TRADE_SETTINGS = {
   // ── Entry headroom gate ──────────────────────────────────────────────────
   // Refuse buys where price has already run this far above the sustained trigger.
   entryHeadroomEnabled: true,
-  maxEntryDragPct:      35,       // skip if run-up above trigger exceeds this %. Raised from
-                                  // 18: that figure came from ~10s entries, but the 75s
-                                  // persistence gate deliberately enters later, so 18 blocked
-                                  // everything. Winners peaking after 75s still show ~50%
-                                  // median total upside, so 35 leaves real headroom.
-                                  // Provisional — drag_at_ready data will set this properly.
+  maxEntryDragPct:      40,       // effectively inert at 30s (drag_at_ready median 0%, p90
+                                  // 2.6% in the 233-row test) — set loose so it never
+                                  // false-blocks a valid entry; kept only as a runaway guard
   // ── Sustained persistence gate ───────────────────────────────────────────
   // Token must hold sustained CONTINUOUSLY this long before it can be queued.
   // Data: fading inside 90s → 17-30% hit +20%; holding 90-300s → 60%.
