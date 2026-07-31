@@ -572,36 +572,6 @@ function TableHeader({ sortBy, setSortBy }) {
   );
 }
 
-// ─── META CARD ────────────────────────────────────────────────────────────────
-function MetaCard({ meta, onSelect, selected }) {
-  const ch1 = parseFloat(meta.marketCapChange?.h1 || 0);
-  const ch24 = parseFloat(meta.marketCapChange?.h24 || 0);
-  const hot = ch1 > 5;
-  const isSel = selected === meta.slug;
-  return (
-    <div onClick={() => onSelect(isSel ? null : meta.slug)} style={{
-      background: isSel ? "var(--surface3)" : "var(--surface2)",
-      border: `1px solid ${isSel ? "var(--accent)" : hot ? "#2ecc4033" : "var(--border)"}`,
-      borderRadius: 6, padding: "10px 12px", cursor: "pointer", transition: "all 0.15s",
-    }}>
-      <div style={{ fontSize: "0.75rem", fontWeight: 600, color: hot ? "var(--green)" : "var(--text2)", marginBottom: 6, display: "flex", alignItems: "center", gap: 4 }}>
-        {hot && <span style={{ fontSize: "0.6rem" }}>🔥</span>} {meta.name}
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 4 }}>
-        {[["1H", ch1], ["24H", ch24]].map(([l,v]) => (
-          <div key={l}>
-            <div style={{ fontSize: "0.55rem", color: "var(--muted)", fontFamily: "var(--font-mono)", marginBottom: 1 }}>{l}</div>
-            <Pct val={v} size="sm" />
-          </div>
-        ))}
-        <div>
-          <div style={{ fontSize: "0.55rem", color: "var(--muted)", fontFamily: "var(--font-mono)", marginBottom: 1 }}>TOKENS</div>
-          <span style={{ fontSize: "0.72rem", color: "var(--text2)", fontFamily: "var(--font-mono)" }}>{meta.tokenCount}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function SolScanner() {

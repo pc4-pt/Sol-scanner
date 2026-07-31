@@ -22,6 +22,28 @@ function load(key, fallback) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
   catch { return fallback; }
 }
+// Settings need special handling: a stored blob from an older build is MISSING every
+// field added since, and can hold STALE values for fields whose defaults we've changed
+// (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
+// fields appear, then a version gate re-applies the current defaults for the
+// exit/entry-stack fields that must not be overridden by stale storage.
+const SETTINGS_VERSION = 3;
+function loadSettings() {
+  const stored = load(KEYS.settings, null);
+  if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
+  let s = { ...DEFAULT_TRADE_SETTINGS, ...stored };
+  if ((stored._v ?? 0) < SETTINGS_VERSION) {
+    // migrate: force the safety-critical exit/entry fields back to current defaults,
+    // since stale stored values here caused real losses (e.g. -84% fills on the old ladder)
+    const forced = ["sellSlippageLadder", "pumpSlippage", "pumpPriorityFee",
+      "partialTpEnabled", "partialTpPct", "partialTpFraction",
+      "takeProfitPct", "stopLossPct", "trailingActivateAt", "trailDrawdownPct",
+      "entryHeadroomEnabled", "maxEntryDragPct", "minSustainedAgeSec"];
+    for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
+    s._v = SETTINGS_VERSION;
+  }
+  return s;
+}
 function save(key, val) {
   try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
 }
@@ -83,7 +105,7 @@ export function useTrading() {
   const effSignTransaction = burner.active ? burner.signTransaction : signTransaction;
   const effConnected     = burner.active ? !!burner.publicKey   : connected;
 
-  const [settings,      setSettings]  = useState(() => load(KEYS.settings,  DEFAULT_TRADE_SETTINGS));
+  const [settings,      setSettings]  = useState(loadSettings);
   const [queue,         setQueue]     = useState([]);
   const [queueSort,     setQueueSort] = useState("priority");
   const [positions,     setPositions] = useState(() => load(KEYS.positions, []));
@@ -317,7 +339,7 @@ export function useTrading() {
         try { livePrice = await fetchCurrentPrice(queueItem.tokenAddress); } catch { /* ignore */ }
         if (sustainedPrice > 0 && livePrice > 0) {
           const dragPct = ((livePrice - sustainedPrice) / sustainedPrice) * 100;
-          const maxDrag = settings.maxEntryDragPct ?? 18;
+          const maxDrag = settings.maxEntryDragPct ?? 40;
           if (dragPct > maxDrag) {
             notify(`✕ ${queueItem.symbol} skipped — already ran +${dragPct.toFixed(0)}% `
               + `above trigger (max ${maxDrag}%); no headroom left`, "warn");
@@ -615,8 +637,8 @@ export function useTrading() {
         gracePeriodMs:      (settings.graceSec ?? 60) * 1000,
         breakEvenAt:        settings.breakEvenAtPct ?? 5,
         trailingEnabled:    settings.trailingEnabled ?? true,
-        trailingActivateAt: settings.trailingActivateAt ?? 30,
-        trailDrawdownPct:   settings.trailDrawdownPct ?? 15,
+        trailingActivateAt: settings.trailingActivateAt ?? 18,
+        trailDrawdownPct:   settings.trailDrawdownPct ?? 10,
       };
 
       for (const pos of open) {
@@ -724,8 +746,9 @@ export function useTrading() {
     }, PRICE_POLL_MS);
     return () => clearInterval(priceMonitorRef.current);
     // settings is included so grace/breakEven changes apply on next tick
-  }, [executeSell, settings.graceSec, settings.breakEvenAtPct,
-      settings.trailingEnabled, settings.trailingActivateAt, settings.trailDrawdownPct]);
+  }, [executeSell, executePartialSell, settings.graceSec, settings.breakEvenAtPct,
+      settings.trailingEnabled, settings.trailingActivateAt, settings.trailDrawdownPct,
+      settings.partialTpEnabled, settings.partialTpPct, effConnected, effPublicKey]);
 
   // ── Auto-queue + refresh + prune from scanner ─────────────────────────────
   // Called on every scan pass from App.jsx with the latest token list.
