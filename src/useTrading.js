@@ -592,6 +592,7 @@ export function useTrading() {
   // ── Partial profit-take: sell a fraction, keep the position open ───────────
   // Banks realised SOL early (latency-robust), then the remainder trails for the tail.
   const executePartialSell = useCallback(async (position, fraction, atPct) => {
+    console.warn(`[partialTP] executePartialSell ENTER ${position.symbol} frac=${fraction} conn=${effConnected} pk=${!!effPublicKey} sign=${!!effSignTransaction}`);
     // Signer guard — same as executeBuy/executeSell. Without this, a dropped wallet
     // made effPublicKey null and .toBase58() threw mid-trade.
     if (!effConnected || !effPublicKey || !effSignTransaction) {
@@ -698,15 +699,29 @@ export function useTrading() {
           ));
 
           // ── Partial profit-take: bank a fraction once up partialTpPct, then trail rest ──
-          if ((settings.partialTpEnabled ?? true)
-              && effConnected && effPublicKey
-              && !pos.partialTaken
-              && !partialFiringRef.current.has(pos.id)
-              && (pnl?.pct ?? 0) >= (settings.partialTpPct ?? 35)) {
+          const sref = settingsRef.current;
+          const ptEnabled = sref.partialTpEnabled ?? true;
+          const ptPct = sref.partialTpPct ?? 35;
+          const curPct = pnl?.pct ?? 0;
+          if (ptEnabled && curPct >= ptPct) {
+            // arithmetic condition met — log WHY it does or doesn't proceed, so a
+            // silent non-fire becomes visible instead of guessed at
             const freshP = positionsRef.current.find(p => p.id === pos.id);
-            if (freshP && freshP.status === "open" && !freshP.stuck && !freshP.partialTaken) {
+            const block =
+              !effConnected ? "no effConnected"
+              : !effPublicKey ? "no effPublicKey"
+              : partialFiringRef.current.has(pos.id) ? "already firing"
+              : !freshP ? "no freshP"
+              : freshP.status !== "open" ? "not open"
+              : freshP.stuck ? "stuck"
+              : freshP.partialTaken ? "already partialTaken"
+              : null;
+            if (block) {
+              console.warn(`[partialTP] ${pos.symbol} at +${curPct.toFixed(0)}% NOT firing — ${block}`);
+            } else {
+              console.warn(`[partialTP] ${pos.symbol} FIRING at +${curPct.toFixed(0)}% (sell ${Math.round((sref.partialTpFraction ?? 0.5)*100)}%)`);
               executePartialSell({ ...freshP, currentPrice: price },
-                settings.partialTpFraction ?? 0.5, pnl?.pct ?? 0);
+                sref.partialTpFraction ?? 0.5, curPct);
             }
           }
 
