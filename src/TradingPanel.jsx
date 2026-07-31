@@ -196,6 +196,39 @@ function SettingsPanel({ settings, updateSettings }) {
           <NumField label="Min vol/liq ratio"      field="minVolLiqRatio"  min={0}    max={20}   step={0.5}  suffix="x"/>
           <NumField label="Cooldown per token"     field="cooldownMinutes" min={5}    max={240}  step={5}    suffix="min"/>
         </div>
+
+        <div style={{paddingTop:4}}>
+          <div style={{fontSize:"0.6rem",fontFamily:C.mono,fontWeight:700,color:C.muted,
+            letterSpacing:"0.08em",padding:"10px 0 2px"}}>NATIVE EXECUTION &amp; EXIT STACK</div>
+          <NumField label="Sustained gate" field="minSustainedAgeSec" min={0} max={180} step={5} suffix="s"
+            description="Hold sustained continuously this long before a token is queueable"/>
+          <Toggle label="Entry headroom gate" field="entryHeadroomEnabled"
+            description="Skip buys that already ran past the sustained trigger"/>
+          <NumField label="Max entry drag" field="maxEntryDragPct" min={5} max={100} step={5} suffix="%"
+            description="Skip if run-up above trigger exceeds this"/>
+          <Toggle label="Partial take-profit" field="partialTpEnabled"
+            description="Bank a fraction early, trail the rest"/>
+          <NumField label="Partial TP trigger" field="partialTpPct" min={10} max={200} step={5} suffix="%"/>
+          <NumField label="Partial TP fraction" field="partialTpFraction" min={0.1} max={1} step={0.05}
+            description="0.5 = sell half at the trigger"/>
+          <NumField label="Curve slippage" field="pumpSlippage" min={5} max={50} step={1} suffix="%"
+            description="Base slippage for native buys/sells"/>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+            padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
+            <div>
+              <div style={{fontSize:"0.67rem",color:C.muted2}}>Sell slippage ladder</div>
+              <div style={{fontSize:"0.6rem",color:C.muted,marginTop:1}}>Exits escalate through these % (comma-separated)</div>
+            </div>
+            <input type="text" defaultValue={(settings.sellSlippageLadder||[]).join(", ")}
+              key={(settings.sellSlippageLadder||[]).join(",")}
+              onBlur={e=>{
+                const arr=e.target.value.split(",").map(x=>parseFloat(x.trim())).filter(x=>!isNaN(x)&&x>0);
+                if(arr.length) updateSettings({sellSlippageLadder:arr});
+              }}
+              style={{width:90,background:C.surface3,border:`1px solid ${C.border}`,borderRadius:4,
+                color:C.text,padding:"3px 8px",fontSize:"0.72rem",fontFamily:C.mono,textAlign:"right",outline:"none"}}/>
+          </div>
+        </div>
         <div style={{paddingTop:4}}>
           <Toggle label="Require momentum signal" field="requireMomentum"
             description="Only queue EARLY MOMENTUM and UPTREND signals"/>
@@ -1028,7 +1061,7 @@ export function TradingPanel({ trading, solBalance }) {
                 ["Momentum filter",  settings.requireMomentum?"EARLY MOMENTUM / UPTREND":"Any signal"],
                 ["Position sizing",  settings.scaleByConfidence?"Scaled by confidence (50-100%)":"Fixed stake"],
                 ["Trailing TP",      settings.trailingEnabled
-                  ? `Active above +${settings.trailingActivateAt ?? 30}%, -${settings.trailDrawdownPct ?? 15}% drawdown`
+                  ? `Active above +${settings.trailingActivateAt ?? 18}%, -${settings.trailDrawdownPct ?? 10}% drawdown`
                   : "OFF (fixed TP only)"],
                 ["Max positions",    settings.maxPositions],
                 ["Cooldown",         settings.cooldownMinutes+"min per token"],
