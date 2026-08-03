@@ -464,12 +464,16 @@ export function useTrading() {
   // like the old Jupiter path did, so an exit isn't abandoned because price moved.
   const nativeSell = useCallback(async (mint, amountStr) => {
     const ladder = settings.sellSlippageLadder ?? [15, 25];
-    // Try pools in order. "auto" normally picks the right venue, but at the moment a
-    // token GRADUATES its liquidity moves to Raydium and the curve rejects sells with
-    // Custom:6005 ("bonding curve complete"). When we see that, retry explicitly on
-    // Raydium — the token is fully liquid there, just not on the curve any more.
-    const isCurveComplete = (err) => typeof err === "string" && err.includes("6005");
+    // Escalate slippage WITHIN a pool only when the failure is slippage-related.
+    // Any other failure (a 400 request rejection, or on-chain 6005) means this pool
+    // can't fill the sell regardless of slippage — most often because the token
+    // GRADUATED and its liquidity moved to Raydium. In that case, move to the next
+    // pool. A graduated token rejects on the curve either as a request-time 400 or an
+    // on-chain 6005, so we can't rely on 6005 alone — anything non-slippage advances.
+    const isSlippage = (err) => typeof err === "string" &&
+      (err.includes("6003") || err.includes("6002") || err.toLowerCase().includes("slippage"));
     let last = null;
+    const attempts = [];
     for (const pool of ["auto", "raydium"]) {
       for (const slip of ladder) {
         const r = await pumpPortalTrade({
@@ -486,14 +490,12 @@ export function useTrading() {
         });
         last = { ...r, slippageUsed: slip, poolUsed: pool };
         if (r.confirmed) return last;
-        // if the curve is complete, don't keep escalating slippage on the curve —
-        // break straight to the Raydium pass
-        if (isCurveComplete(r.err)) break;
+        attempts.push(`${pool}@${slip}:${(r.err || "?").slice(0, 40)}`);
+        if (!isSlippage(r.err)) break;   // won't improve with more slippage → next pool
       }
-      // only advance to the Raydium pass if the failure was curve-complete
-      if (!isCurveComplete(last?.err)) break;
     }
-    return last || { confirmed: false, err: "no attempt made" };
+    return { ...(last || {}), confirmed: false,
+             err: last?.err || "no attempt made", attempts: attempts.join(" | ") };
   }, [effPublicKey, effSignTransaction, connection, settings]);
 
   const executeSell = useCallback(async (position, reason = "MANUAL") => {
@@ -514,7 +516,7 @@ export function useTrading() {
     notify(`Selling ${position.symbol} (${reason})…`, "info");
 
     try {
-      const { sig, confirmed, err, slippageUsed } = await nativeSell(position.tokenAddress, "100%");
+      const { sig, confirmed, err, slippageUsed, attempts } = await nativeSell(position.tokenAddress, "100%");
       if (!confirmed) {
         // Exit didn't confirm (likely slippage at the capped ladder). Count it and
         // let the monitor retry on the next poll; only mark stuck after repeated
@@ -522,6 +524,7 @@ export function useTrading() {
         const c = (sellFailCountRef.current.get(position.id) || 0) + 1;
         sellFailCountRef.current.set(position.id, c);
         const giveUp = c >= 3;
+        console.warn(`[sell] ${position.symbol} FAILED — attempts: ${attempts || err}`);
         notify(`Sell attempt ${c} failed for ${position.symbol}: ${err || "unconfirmed"}`
           + (giveUp ? " — marked stuck" : " — retrying"), "warn");
         if (giveUp) {
@@ -615,8 +618,9 @@ export function useTrading() {
     partialFiringRef.current.add(position.id);
     try {
       const pctStr = `${Math.round(fraction * 100)}%`;
-      const { sig, confirmed, err, slippageUsed } = await nativeSell(position.tokenAddress, pctStr);
+      const { sig, confirmed, err, slippageUsed, attempts } = await nativeSell(position.tokenAddress, pctStr);
       if (!confirmed) {
+        console.warn(`[partialTP] ${position.symbol} SELL FAILED — attempts: ${attempts || err}`);
         notify(`Partial TP failed for ${position.symbol}: ${err || "unconfirmed"}`, "warn");
         return;
       }
