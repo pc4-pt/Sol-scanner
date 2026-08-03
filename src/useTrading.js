@@ -464,22 +464,34 @@ export function useTrading() {
   // like the old Jupiter path did, so an exit isn't abandoned because price moved.
   const nativeSell = useCallback(async (mint, amountStr) => {
     const ladder = settings.sellSlippageLadder ?? [15, 25];
+    // Try pools in order. "auto" normally picks the right venue, but at the moment a
+    // token GRADUATES its liquidity moves to Raydium and the curve rejects sells with
+    // Custom:6005 ("bonding curve complete"). When we see that, retry explicitly on
+    // Raydium — the token is fully liquid there, just not on the curve any more.
+    const isCurveComplete = (err) => typeof err === "string" && err.includes("6005");
     let last = null;
-    for (const slip of ladder) {
-      const r = await pumpPortalTrade({
-        publicKey:        effPublicKey.toBase58(),
-        action:           "sell",
-        mint,
-        amount:           amountStr,
-        denominatedInSol: false,
-        slippage:         slip,
-        priorityFee:      settings.pumpPriorityFee ?? 0.0001,
-        pool:             "auto",
-        signTransaction:  effSignTransaction,
-        connection,
-      });
-      last = { ...r, slippageUsed: slip };
-      if (r.confirmed) return last;
+    for (const pool of ["auto", "raydium"]) {
+      for (const slip of ladder) {
+        const r = await pumpPortalTrade({
+          publicKey:        effPublicKey.toBase58(),
+          action:           "sell",
+          mint,
+          amount:           amountStr,
+          denominatedInSol: false,
+          slippage:         slip,
+          priorityFee:      settings.pumpPriorityFee ?? 0.0001,
+          pool,
+          signTransaction:  effSignTransaction,
+          connection,
+        });
+        last = { ...r, slippageUsed: slip, poolUsed: pool };
+        if (r.confirmed) return last;
+        // if the curve is complete, don't keep escalating slippage on the curve —
+        // break straight to the Raydium pass
+        if (isCurveComplete(r.err)) break;
+      }
+      // only advance to the Raydium pass if the failure was curve-complete
+      if (!isCurveComplete(last?.err)) break;
     }
     return last || { confirmed: false, err: "no attempt made" };
   }, [effPublicKey, effSignTransaction, connection, settings]);
