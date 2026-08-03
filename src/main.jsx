@@ -8,6 +8,12 @@ import "@solana/wallet-adapter-react-ui/styles.css";
 import App from "./App.jsx";
 import { ErrorBoundary } from "./ErrorBoundary.jsx";
 
+// Build stamp — bump on each packaged build so you can confirm at a glance WHICH build
+// is actually deployed. "git status clean" only proves your tree matches your last
+// commit; this proves which code is live. Open the console on load to check.
+export const BUILD_ID = "2026-07-31 · raydium-fallback + partialTP-fix + build-stamp";
+console.log(`%c[build] sol-scanner — ${BUILD_ID}`, "color:#00e5c3;font-weight:700");
+
 // Wallet adapter CSS override — match our dark theme
 const walletStyles = `
   .wallet-adapter-modal-wrapper {
@@ -40,6 +46,10 @@ function Root() {
           <ErrorBoundary>
             <App />
           </ErrorBoundary>
+          <div style={{ position: "fixed", bottom: 4, right: 6, zIndex: 9999,
+            fontSize: "0.5rem", fontFamily: "monospace", color: "#3a4553",
+            pointerEvents: "none", userSelect: "none" }}
+            title={BUILD_ID}>build: {BUILD_ID.split(" · ")[0]}</div>
         </WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>
