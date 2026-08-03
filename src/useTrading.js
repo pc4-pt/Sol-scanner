@@ -27,7 +27,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -38,7 +38,8 @@ function loadSettings() {
     const forced = ["sellSlippageLadder", "pumpSlippage", "pumpPriorityFee",
       "partialTpEnabled", "partialTpPct", "partialTpFraction",
       "takeProfitPct", "stopLossPct", "trailingActivateAt", "trailDrawdownPct",
-      "entryHeadroomEnabled", "maxEntryDragPct", "minSustainedAgeSec"];
+      "entryHeadroomEnabled", "maxEntryDragPct", "minSustainedAgeSec",
+      "momentumReversalExit", "reversalBpThreshold", "reversalPcThreshold", "reversalMinTrades"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -696,6 +697,17 @@ export function useTrading() {
               // Auto-exit only on SUSTAINED fade (windowed), never a single dip.
               if (timing === "fading" && past && (settings.momentumAutoExit ?? false) && !exit) {
                 exit = { reason: "MOMENTUM_FADE" };
+              }
+              // ── FAST MOMENTUM REVERSAL — get out AHEAD of the crater ──────────
+              // The -20% price stop fills into the fall on fast collapses (RELIQUIA -79%,
+              // COWE -55%). Sell-pressure flips before price fully craters, so exit when
+              // sells dominate AND price has started rolling over — a leading signal, not
+              // the lagging price stop. Requires enough trades for bp to be meaningful.
+              if ((settings.momentumReversalExit ?? true) && past && !exit
+                  && act.trades5m >= (settings.reversalMinTrades ?? 8)
+                  && bp <= (settings.reversalBpThreshold ?? 0.30)
+                  && act.priceChange5m <= (settings.reversalPcThreshold ?? -8)) {
+                exit = { reason: "MOMENTUM_REVERSAL" };
               }
             }
           } catch { /* activity is best-effort */ }

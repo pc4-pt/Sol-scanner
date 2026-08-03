@@ -213,6 +213,12 @@ function SettingsPanel({ settings, updateSettings }) {
             description="0.5 = sell half at the trigger"/>
           <NumField label="Curve slippage" field="pumpSlippage" min={5} max={50} step={1} suffix="%"
             description="Base slippage for native buys/sells"/>
+          <Toggle label="Momentum-reversal exit" field="momentumReversalExit"
+            description="Sell when sell-pressure spikes, ahead of the price stop"/>
+          <NumField label="Reversal buy-pressure" field="reversalBpThreshold" min={0.1} max={0.5} step={0.05}
+            description="Exit if buy-pressure drops to/below this (0.30 = 70% sells)"/>
+          <NumField label="Reversal price drop" field="reversalPcThreshold" min={-30} max={-2} step={1} suffix="%"
+            description="…and 5m price change at/below this"/>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
             padding:"7px 0",borderBottom:`1px solid ${C.border}`}}>
             <div>

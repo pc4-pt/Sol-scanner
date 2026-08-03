@@ -507,6 +507,11 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // (they peaked and faded before trailing ever engaged)
   trailDrawdownPct:   10,         // exit when peak drops by this % (tightened from 15 — real
                                   // trades gave back most of the peak at 15)
+  // ── Fast momentum-reversal exit — beats the price stop on fast collapses ──
+  momentumReversalExit: true,
+  reversalBpThreshold: 0.30,      // exit if buy-pressure ≤ this (≥70% of recent txns are sells)
+  reversalPcThreshold: -8,        // …AND 5m price change ≤ this %
+  reversalMinTrades:   8,         // require this many 5m trades so buy-pressure is meaningful
   // ── Momentum-fade sell signal (first-minutes rollover) ───────────────────
   momentumAutoExit:       false,  // false = show the FADING signal only; true = auto-sell on sustained fade
   momentumFadeBuyPressure: 0.42,  // buy pressure below this (with rollover) = fading
