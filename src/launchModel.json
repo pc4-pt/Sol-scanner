@@ -1,5 +1,4 @@
 {
-  "_note": "Trained model from launch_score.py on the real creator_dataset.csv (replaces the earlier synthetic placeholder). Scoring code reads these arrays by index — keep the feature order intact when regenerating.",
   "features": [
     "f_dev_sol",
     "f_prior_rate",
