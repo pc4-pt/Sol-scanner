@@ -422,6 +422,9 @@ export const DEFAULT_TRADE_SETTINGS = {
   // exits, but filled so badly that a 20% stop realised −50 to −60%. Better to fail
   // an exit and retry than to dump at 60% slippage.
   sellSlippageLadder: [15, 25],
+  gradSellMaxRetries: 20,         // graduated tokens 400 transiently while migrating to
+                                  // PumpSwap; keep auto-retrying the exit this many polls
+                                  // before marking stuck (other failures give up after 3)
   pumpPriorityFee:    0.0001,     // SOL priority fee per trade
   // ── Entry headroom gate ──────────────────────────────────────────────────
   // Refuse buys where price has already run this far above the sustained trigger.

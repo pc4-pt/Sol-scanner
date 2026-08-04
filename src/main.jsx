@@ -11,7 +11,7 @@ import { ErrorBoundary } from "./ErrorBoundary.jsx";
 // Build stamp — bump on each packaged build so you can confirm at a glance WHICH build
 // is actually deployed. "git status clean" only proves your tree matches your last
 // commit; this proves which code is live. Open the console on load to check.
-export const BUILD_ID = "2026-08-03b · pumpswap-graduated-sell-fix";
+export const BUILD_ID = "2026-08-03c · pumpswap-sell + grad-retry-window";
 console.log(`%c[build] sol-scanner — ${BUILD_ID}`, "color:#00e5c3;font-weight:700");
 
 // Wallet adapter CSS override — match our dark theme

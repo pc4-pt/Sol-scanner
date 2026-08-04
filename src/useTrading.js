@@ -529,10 +529,17 @@ export function useTrading() {
         // failures, so one bad fill attempt doesn't strand the position.
         const c = (sellFailCountRef.current.get(position.id) || 0) + 1;
         sellFailCountRef.current.set(position.id, c);
-        const giveUp = c >= 3;
-        console.warn(`[sell] ${position.symbol} FAILED — attempts: ${attempts || err}`);
+        // Graduation is a TRANSIENT window: while a token migrates to PumpSwap, sells
+        // 400/6005 for a minute or two, then recover (confirmed by manually retrying SOS
+        // until it cleared). So for graduation-type failures, keep auto-retrying across
+        // the migration window instead of stranding the position after 3. Other failures
+        // still give up quickly.
+        const gradType = /400|6005|Bad Request/i.test(String(err || "") + " " + String(attempts || ""));
+        const limit = gradType ? (settings.gradSellMaxRetries ?? 20) : 3;
+        const giveUp = c >= limit;
+        console.warn(`[sell] ${position.symbol} FAILED (${c}/${limit}${gradType ? " grad" : ""}) — attempts: ${attempts || err}`);
         notify(`Sell attempt ${c} failed for ${position.symbol}: ${err || "unconfirmed"}`
-          + (giveUp ? " — marked stuck" : " — retrying"), "warn");
+          + (giveUp ? " — marked stuck" : gradType ? " — migrating, retrying" : " — retrying"), "warn");
         if (giveUp) {
           setPositions(prev => prev.map(p => p.id === position.id
             ? { ...p, stuck: true, stuckReason: String(err || "sell not confirmed").slice(0, 140) } : p));
