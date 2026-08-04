@@ -475,7 +475,12 @@ export function useTrading() {
       (err.includes("6003") || err.includes("6002") || err.toLowerCase().includes("slippage"));
     let last = null;
     const attempts = [];
-    for (const pool of ["auto", "raydium"]) {
+    // Graduated pump.fun tokens migrate to PumpSwap (pump-amm) by default since Mar 2025,
+    // NOT Raydium — so a graduated token must be sold on pump-amm. "auto" SHOULD route
+    // there, but has been returning 400 on some graduated tokens, so we fall through
+    // explicit venues: PumpSwap first (where graduated liquidity actually lives), then
+    // Raydium/its CPMM variant, in case a token routed elsewhere.
+    for (const pool of ["auto", "pump-amm", "raydium", "raydium-cpmm"]) {
       for (const slip of ladder) {
         const r = await pumpPortalTrade({
           publicKey:        effPublicKey.toBase58(),
