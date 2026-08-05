@@ -501,7 +501,13 @@ export const DEFAULT_TRADE_SETTINGS = {
   blockHighOwnership: true,
   // ── Position management (Stage A + B) — KEPT ────────────────────────────
   adaptiveStopLoss:   true,
-  graceSec:           60,
+  graceSec:           30,         // suppress the -20% price stop this long after entry, to
+                                  // avoid getting stopped out by entry noise. Lowered from 60:
+                                  // we now enter at the 30s sustained gate (more established
+                                  // tokens), so a full minute unprotected is too long.
+  reversalGraceSec:   12,         // the momentum-REVERSAL exit is a real dump signal, not
+                                  // noise, so it gets a much shorter grace — it must be able
+                                  // to catch a fast collapse inside the first minute
   breakEvenAtPct:     5,
   // ── Trailing take-profit — KEPT: exit logic, never falsified ─────────────
   trailingEnabled:    true,       // disable fixed TP once trailing activates

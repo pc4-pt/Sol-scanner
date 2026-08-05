@@ -17,7 +17,8 @@ export async function getSolBalance(connection, pubkey) {
 export async function getTxSolDelta(connection, sig, pubkey) {
   if (!connection || !sig || !pubkey) return null;
   const target = pubkey.toString();
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 15; i++) {   // ~15s — reads the confirmed tx's balance delta; the
+                                   // partial/final P&L depends on this, so give it more time
     try {
       const tx = await connection.getParsedTransaction(sig, {
         maxSupportedTransactionVersion: 0, commitment: "confirmed",

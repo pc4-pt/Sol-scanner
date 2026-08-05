@@ -27,7 +27,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 4;
+const SETTINGS_VERSION = 5;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -39,7 +39,8 @@ function loadSettings() {
       "partialTpEnabled", "partialTpPct", "partialTpFraction",
       "takeProfitPct", "stopLossPct", "trailingActivateAt", "trailDrawdownPct",
       "entryHeadroomEnabled", "maxEntryDragPct", "minSustainedAgeSec",
-      "momentumReversalExit", "reversalBpThreshold", "reversalPcThreshold", "reversalMinTrades"];
+      "momentumReversalExit", "reversalBpThreshold", "reversalPcThreshold", "reversalMinTrades",
+      "graceSec", "reversalGraceSec"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -579,6 +580,11 @@ export function useTrading() {
         exitPrice: position.currentPrice, price: position.currentPrice,
         pnlPct: parseFloat(pnlPct.toFixed(2)),
         peakPnlPct: position.peakPnlPct ?? null, exitReason: reason,
+        partialTaken: !!position.partialTaken,
+        partialPct: position.partialPct ?? "",
+        partialProceeds: position.partialProceeds ? parseFloat(position.partialProceeds.toFixed(6)) : "",
+        partialEstimated: !!position.partialEstimated,
+        solReceived: parseFloat(solReceived.toFixed(6)),
       });
 
       notify(
@@ -638,13 +644,25 @@ export function useTrading() {
         return;
       }
       const solDelta = await getTxSolDelta(connection, sig, effPublicKey);
-      const proceeds = (solDelta != null && solDelta > 0) ? solDelta : 0;
+      let proceeds, estimated = false;
+      if (solDelta != null && solDelta > 0) {
+        proceeds = solDelta;
+      } else {
+        // The on-chain sell CONFIRMED (SOL is in the wallet), but reading the exact
+        // tx balance-delta timed out. Do NOT record 0 — that silently drops the banked
+        // amount from P&L (this is what made LAND +495% and chud +174% show as losses).
+        // Estimate from the sold fraction at the partial price instead, and flag it.
+        proceeds = fraction * (position.solSpent || 0) * (1 + (atPct / 100));
+        estimated = true;
+        console.warn(`[partialTP] ${position.symbol} tx-delta read failed — ESTIMATED proceeds ${proceeds.toFixed(4)} SOL (banked on-chain, exact value unread)`);
+      }
       setPositions(prev => prev.map(p => p.id === position.id
         ? { ...p, partialTaken: true, partialProceeds: (p.partialProceeds || 0) + proceeds,
-            partialPct: atPct }
+            partialPct: atPct, partialEstimated: estimated || p.partialEstimated }
         : p));
-      logMilestone(position.tokenAddress, position.symbol, "partial_tp", { price: position.currentPrice });
-      notify(`✓ ${position.symbol} — banked ${pctStr} at +${atPct.toFixed(0)}% (${proceeds.toFixed(4)} SOL)`, "success");
+      logMilestone(position.tokenAddress, position.symbol, "partial_tp",
+        { price: position.currentPrice, partialPct: atPct, partialProceeds: proceeds, partialEstimated: estimated });
+      notify(`✓ ${position.symbol} — banked ${pctStr} at +${atPct.toFixed(0)}% (${proceeds.toFixed(4)} SOL${estimated ? " est" : ""})`, "success");
     } catch (e) {
       notify(`Partial TP error for ${position.symbol}: ${e.message || e}`, "warn");
     } finally {
@@ -714,8 +732,10 @@ export function useTrading() {
               // The -20% price stop fills into the fall on fast collapses (RELIQUIA -79%,
               // COWE -55%). Sell-pressure flips before price fully craters, so exit when
               // sells dominate AND price has started rolling over — a leading signal, not
-              // the lagging price stop. Requires enough trades for bp to be meaningful.
-              if ((settings.momentumReversalExit ?? true) && past && !exit
+              // the lagging price stop. Uses its OWN short grace (not the SL grace) so it
+              // can protect against a collapse in the first minute.
+              const revPast = Date.now() - (pos.openedAt || Date.now()) > (settings.reversalGraceSec ?? 12) * 1000;
+              if ((settings.momentumReversalExit ?? true) && revPast && !exit
                   && act.trades5m >= (settings.reversalMinTrades ?? 8)
                   && bp <= (settings.reversalBpThreshold ?? 0.30)
                   && act.priceChange5m <= (settings.reversalPcThreshold ?? -8)) {

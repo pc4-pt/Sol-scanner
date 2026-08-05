@@ -174,6 +174,11 @@ export function deriveRow(t) {
     pnlPct:     t.data?.pnlPct ?? "",
     peakPnlPct: t.data?.peakPnlPct ?? "",
     exitReason: t.data?.exitReason ?? "",
+    partial_taken:     t.data?.partialTaken ? "yes" : "",
+    partial_pct:       t.data?.partialPct ?? "",
+    partial_proceeds:  t.data?.partialProceeds ?? "",
+    partial_estimated: t.data?.partialEstimated ? "yes" : "",
+    sol_received:      t.data?.solReceived ?? "",
     // absolute prices at each milestone
     price_eligible:  p.eligible  ?? "", price_sustained: p.sustained ?? "",
     price_queued:    p.queued    ?? "", price_bought:    p.bought    ?? "",

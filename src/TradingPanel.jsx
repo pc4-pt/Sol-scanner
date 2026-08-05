@@ -215,6 +215,10 @@ function SettingsPanel({ settings, updateSettings }) {
             description="Base slippage for native buys/sells"/>
           <Toggle label="Momentum-reversal exit" field="momentumReversalExit"
             description="Sell when sell-pressure spikes, ahead of the price stop"/>
+          <NumField label="Stop-loss grace" field="graceSec" min={0} max={120} step={5} suffix="s"
+            description="Suppress the -20% stop this long after entry (entry-noise guard)"/>
+          <NumField label="Reversal grace" field="reversalGraceSec" min={0} max={60} step={2} suffix="s"
+            description="Shorter grace for the reversal exit so it can catch early collapses"/>
           <NumField label="Reversal buy-pressure" field="reversalBpThreshold" min={0.1} max={0.5} step={0.05}
             description="Exit if buy-pressure drops to/below this (0.30 = 70% sells)"/>
           <NumField label="Reversal price drop" field="reversalPcThreshold" min={-30} max={-2} step={1} suffix="%"
