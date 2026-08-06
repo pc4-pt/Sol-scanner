@@ -119,7 +119,7 @@ export function useLaunchStream({
   sustainSec = 90, minSamples = 4,
   minSustainScore = 60,
   minSustainedAgeSec = 75,
-  minSustainPcH1 = 40, minSustainVolH1 = 1500,
+  minSustainPcH1 = 40, maxSustainPcH1 = 120, minSustainVolH1 = 1500,
   validateMinScore = 40,
 } = {}) {
   const [launches, setLaunches] = useState([]);
@@ -134,8 +134,8 @@ export function useLaunchStream({
   useEffect(() => {
     cfgRef.current = { confirmWindowSec, probeSol, minRecovery, minTrades5m,
                        minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore,
-                       minSustainPcH1, minSustainVolH1, validateMinScore };
-  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, minSustainPcH1, minSustainVolH1, validateMinScore]);
+                       minSustainPcH1, maxSustainPcH1, minSustainVolH1, validateMinScore };
+  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, minSustainPcH1, maxSustainPcH1, minSustainVolH1, validateMinScore]);
 
   useEffect(() => {
     if (!enabled) { setStatus("off"); return; }
@@ -210,12 +210,16 @@ export function useLaunchStream({
               const liqUsd = res.liq || 0;
               const liqSol = res.liqSol || 0;
               const liqMeasure = liqUsd || liqSol;   // prefer usd, else SOL-denominated
-              // ACTIONABLE FILTER (from the optimiser): non-mayhem + pcH1>=floor + volH1>=floor.
-              // This is a FLAG, not a tracking gate — we still paper-track failing tokens as
-              // a control group so we can confirm the filter's edge holds.
+              // ACTIONABLE FILTER (from the optimiser): non-mayhem + pcH1 in [floor, ceiling]
+              // + volH1>=floor. The pcH1 CEILING is new (08-06 data): losers had HIGHER
+              // median pcH1 (165%) than winners (109%) — tokens already up huge on the hour
+              // are late-stage exhausted pumps that rarely go green from entry. Skipping the
+              // over-extended ones should cut the "never went green" losers.
+              const pcH1 = res.priceChangeH1 ?? 0;
               const passedFilter =
                 (x.isMayhem ? 0 : 1) &&
-                ((res.priceChangeH1 ?? 0) >= c.minSustainPcH1) &&
+                (pcH1 >= c.minSustainPcH1) &&
+                (pcH1 <= (c.maxSustainPcH1 ?? 120)) &&
                 ((res.volH1 ?? 0) >= c.minSustainVolH1) ? 1 : 0;
               recordFeatures(x.mint, x.symbol, {
                 f_devSol: x.devSol, f_launchMcapSol: x.marketCapSol,

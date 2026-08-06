@@ -27,7 +27,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 5;
+const SETTINGS_VERSION = 6;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -40,7 +40,8 @@ function loadSettings() {
       "takeProfitPct", "stopLossPct", "trailingActivateAt", "trailDrawdownPct",
       "entryHeadroomEnabled", "maxEntryDragPct", "minSustainedAgeSec",
       "momentumReversalExit", "reversalBpThreshold", "reversalPcThreshold", "reversalMinTrades",
-      "graceSec", "reversalGraceSec"];
+      "graceSec", "reversalGraceSec",
+      "earlyStopPct", "earlyStopGraceSec", "maxSustainPcH1"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -687,6 +688,8 @@ export function useTrading() {
         trailingEnabled:    settings.trailingEnabled ?? true,
         trailingActivateAt: settings.trailingActivateAt ?? 18,
         trailDrawdownPct:   settings.trailDrawdownPct ?? 10,
+        earlyStopPct:       settings.earlyStopPct ?? 12,
+        earlyStopGraceSec:  settings.earlyStopGraceSec ?? 8,
       };
 
       for (const pos of open) {

@@ -219,6 +219,12 @@ function SettingsPanel({ settings, updateSettings }) {
             description="Suppress the -20% stop this long after entry (entry-noise guard)"/>
           <NumField label="Reversal grace" field="reversalGraceSec" min={0} max={60} step={2} suffix="s"
             description="Shorter grace for the reversal exit so it can catch early collapses"/>
+          <NumField label="Early stop (never-green)" field="earlyStopPct" min={5} max={20} step={1} suffix="%"
+            description="Exit a red-from-entry trade at this loss during grace (caps the big losers)"/>
+          <NumField label="Early stop grace" field="earlyStopGraceSec" min={0} max={30} step={1} suffix="s"
+            description="Wait this long before the early stop can fire"/>
+          <NumField label="Max hourly pump" field="maxSustainPcH1" min={60} max={300} step={10} suffix="%"
+            description="Skip tokens already up more than this on the hour (exhausted pumps)"/>
           <NumField label="Reversal buy-pressure" field="reversalBpThreshold" min={0.1} max={0.5} step={0.05}
             description="Exit if buy-pressure drops to/below this (0.30 = 70% sells)"/>
           <NumField label="Reversal price drop" field="reversalPcThreshold" min={-30} max={-2} step={1} suffix="%"

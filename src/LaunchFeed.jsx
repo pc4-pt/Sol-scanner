@@ -58,6 +58,7 @@ export function LaunchFeed({ trading }) {
     minSustainScore: s.minSustainScore ?? 60,
     minSustainedAgeSec: s.minSustainedAgeSec ?? 75,
     minSustainPcH1: s.minSustainPcH1 ?? 40,
+    maxSustainPcH1: s.maxSustainPcH1 ?? 120,
     minSustainVolH1: s.minSustainVolH1 ?? 1500,
     validateMinScore: Math.min(minScore, s.minExecScore ?? 68),
   });

@@ -402,6 +402,19 @@ export function shouldTriggerExit(position, currentPrice, opts = {}) {
   // Break-even SL: once we've been up breakEvenAt%, treat entry as the SL floor.
   const breakEvenActive = peak >= breakEvenAt;
 
+  // ── EARLY STOP for trades that NEVER went green ──────────────────────────
+  // 08-06 data: STOP_LOSS trades averaged -40.7% (worst -77%) because a token that
+  // dumps from entry rides the full grace window unprotected, then the -20% stop fills
+  // into the crater. Those never-green trades are the account-killers (16/17 losers
+  // never reached +20%). So if a trade has NOT been up to break-even AND is already
+  // down past a tighter early-stop level, exit now — even inside grace. Winners (which
+  // go green first, arming break-even) are untouched.
+  const earlyStopPct     = Math.abs(opts.earlyStopPct ?? 12);
+  const earlyStopGraceMs = (opts.earlyStopGraceSec ?? 8) * 1000;
+  if (!breakEvenActive && ageMs >= earlyStopGraceMs && pct <= -earlyStopPct) {
+    return { reason: "EARLY_STOP", pct };
+  }
+
   // Grace period: skip SL if too new (but break-even can still trigger sooner)
   if (ageMs < gracePeriodMs && !breakEvenActive) return null;
 
@@ -508,6 +521,13 @@ export const DEFAULT_TRADE_SETTINGS = {
   reversalGraceSec:   12,         // the momentum-REVERSAL exit is a real dump signal, not
                                   // noise, so it gets a much shorter grace — it must be able
                                   // to catch a fast collapse inside the first minute
+  // ── Early stop for trades that never go green (08-06 data) ───────────────
+  earlyStopPct:       12,         // exit a red-from-entry trade at this loss, even in grace,
+                                  // if it's never been up to break-even (caps the -40/-77% killers)
+  earlyStopGraceSec:  8,          // …but give it this many seconds first, to avoid entry noise
+  // ── Actionable-filter pcH1 ceiling — skip exhausted pumps ────────────────
+  maxSustainPcH1:     120,        // skip tokens already up more than this % on the hour: 08-06
+                                  // losers had HIGHER median pcH1 (165%) than winners (109%)
   breakEvenAtPct:     5,
   // ── Trailing take-profit — KEPT: exit logic, never falsified ─────────────
   trailingEnabled:    true,       // disable fixed TP once trailing activates
