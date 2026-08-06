@@ -6,9 +6,9 @@
 import { VersionedTransaction, PublicKey } from "@solana/web3.js";
 
 export const SOL_MINT      = "So11111111111111111111111111111111111111112";
-export const PRICE_POLL_MS = 4000;   // fast position polling — these tokens round-trip huge
-                                     // moves in seconds; a 15s poll let peaks fully reverse
-                                     // before trailing could react
+export const PRICE_POLL_MS = 2000;   // 2s position polling (from 4s) — cuts reaction time on
+                                     // fast collapses. Still bounded by DexScreener's own feed
+                                     // lag; the real fix for that is the PumpPortal trade stream.
 
 // ── Fetch actual on-chain token balance ────────────────────────────────────
 // Critical for sells: the buy's quote.outAmount may differ from what actually

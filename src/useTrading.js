@@ -691,7 +691,13 @@ export function useTrading() {
 
       for (const pos of open) {
         try {
-          const price = await fetchCurrentPrice(pos.tokenAddress);
+          // ONE DexScreener call per position per poll: fetchTokenActivity returns both
+          // the price and the 5m activity, so derive price from it instead of a second
+          // fetchCurrentPrice call. This halves API load — needed at the 2s poll rate to
+          // stay under DexScreener's ~300/min limit with several open positions.
+          let act = null;
+          try { act = await fetchTokenActivity(pos.tokenAddress); } catch { /* fall back to price */ }
+          const price = act?.priceUsd || await fetchCurrentPrice(pos.tokenAddress);
           if (!price) continue;
           const pnl  = calcPnl(pos, price);
           // Update peakPnlPct — used by break-even SL logic
@@ -701,12 +707,10 @@ export function useTrading() {
           let exit = shouldTriggerExit(posForExit, price, exitOpts);
 
           // ── Momentum-fade sell signal (first-minutes rollover) ─────────────
-          // Fetch live 5m activity; a collapse in buy pressure / trades ahead of
-          // price is the earliest exit tell. Always shown; auto-exits only if enabled.
+          // Uses the activity already fetched above (no second call).
           let mom = null;
           let momTrend = pos.momTrend || [];
           try {
-            const act = await fetchTokenActivity(pos.tokenAddress);
             if (act) {
               const bp = act.trades5m > 0 ? act.buys5m / act.trades5m : 0.5;
               momTrend = [...momTrend, { ts: Date.now(), price: act.priceUsd,
