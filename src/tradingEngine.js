@@ -526,8 +526,10 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // if it's never been up to break-even (caps the -40/-77% killers)
   earlyStopGraceSec:  8,          // …but give it this many seconds first, to avoid entry noise
   // ── Actionable-filter pcH1 ceiling — skip exhausted pumps ────────────────
-  maxSustainPcH1:     120,        // skip tokens already up more than this % on the hour: 08-06
-                                  // losers had HIGHER median pcH1 (165%) than winners (109%)
+  maxSustainPcH1:     100,        // skip tokens already up more than this % on the hour.
+                                  // Lowered 120→100: 08-08 winners clustered at 40-70% hourly
+                                  // pump (median 68), losers at 88%+ (median 88). The edge lives
+                                  // in the EARLIER part of the pump, not the exhausted top.
   breakEvenAtPct:     5,
   // ── Trailing take-profit — KEPT: exit logic, never falsified ─────────────
   trailingEnabled:    true,       // disable fixed TP once trailing activates

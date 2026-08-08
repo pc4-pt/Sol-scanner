@@ -27,7 +27,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 6;
+const SETTINGS_VERSION = 7;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -329,6 +329,26 @@ export function useTrading() {
       // which we no longer use, and would false-block curve tokens. Pump.fun curve
       // tokens are inherently sellable back to the curve, so the exit is the guard.
       const solUsd    = await getSolUsd();
+
+      // ── BUY-TIME pcH1 CEILING RECHECK ────────────────────────────────────
+      // The pcH1 ceiling is checked at QUEUE time, but a token can pump past it in the
+      // seconds before the buy executes (copito passed at queue, hit +214% by buy-time,
+      // lost). Re-check live hourly pump here so the ceiling actually gates execution.
+      if ((settings.maxSustainPcH1 ?? 100) > 0) {
+        try {
+          const actNow = await fetchTokenActivity(queueItem.tokenAddress);
+          const pcH1now = actNow?.priceChangeH1;
+          if (pcH1now != null && pcH1now > (settings.maxSustainPcH1 ?? 100)) {
+            notify(`✕ ${queueItem.symbol} skipped — already +${pcH1now.toFixed(0)}% on the hour `
+              + `(max ${settings.maxSustainPcH1 ?? 100}%); exhausted pump`, "warn");
+            logMilestone(queueItem.tokenAddress, queueItem.symbol, "skipped_pch1", { price: queueItem.priceUsd });
+            setQueue(prev => prev.filter(q => q.id !== queueItem.id));
+            setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
+            buyFiringRef.current.delete(queueItem.id);
+            return;
+          }
+        } catch { /* if the check fails, fall through — queue-time filter already passed */ }
+      }
 
       // ── ENTRY HEADROOM GATE ──────────────────────────────────────────────
       // The 07-20 data showed the losing trades were bought AT or ABOVE the peak:
