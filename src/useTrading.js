@@ -330,42 +330,50 @@ export function useTrading() {
       // tokens are inherently sellable back to the curve, so the exit is the guard.
       const solUsd    = await getSolUsd();
 
-      // ── BUY-TIME pcH1 CEILING RECHECK ────────────────────────────────────
-      // The pcH1 ceiling is checked at QUEUE time, but a token can pump past it in the
-      // seconds before the buy executes (copito passed at queue, hit +214% by buy-time,
-      // lost). Re-check live hourly pump here so the ceiling actually gates execution.
-      if ((settings.maxSustainPcH1 ?? 100) > 0) {
-        try {
-          const actNow = await fetchTokenActivity(queueItem.tokenAddress);
-          const pcH1now = actNow?.priceChangeH1;
-          if (pcH1now != null && pcH1now > (settings.maxSustainPcH1 ?? 100)) {
-            notify(`✕ ${queueItem.symbol} skipped — already +${pcH1now.toFixed(0)}% on the hour `
-              + `(max ${settings.maxSustainPcH1 ?? 100}%); exhausted pump`, "warn");
-            logMilestone(queueItem.tokenAddress, queueItem.symbol, "skipped_pch1", { price: queueItem.priceUsd });
+      // ── BUY-TIME ENTRY GATES (pcH1 ceiling + headroom) ───────────────────
+      // One activity fetch feeds both checks. CONSERVATIVE ON MISSING DATA: if we can't
+      // get a live price we SKIP the buy — the old gate silently ALLOWED the buy when the
+      // price fetch failed, which is how MDUDAS (76% drag) slipped through and lost -88%.
+      // Drag is measured against BOTH the sustained trigger AND the queued price, taking
+      // the larger — so a run-up before OR after queueing is caught.
+      {
+        let actNow = null;
+        try { actNow = await fetchTokenActivity(queueItem.tokenAddress); } catch { /* handled below */ }
+        const livePrice = actNow?.priceUsd || null;
+        const pcH1now   = actNow?.priceChangeH1;
+
+        // pcH1 ceiling (exhausted-pump guard)
+        if ((settings.maxSustainPcH1 ?? 100) > 0 && pcH1now != null
+            && pcH1now > (settings.maxSustainPcH1 ?? 100)) {
+          notify(`✕ ${queueItem.symbol} skipped — +${pcH1now.toFixed(0)}% on the hour `
+            + `(max ${settings.maxSustainPcH1 ?? 100}%); exhausted pump`, "warn");
+          logMilestone(queueItem.tokenAddress, queueItem.symbol, "skipped_pch1", { price: queueItem.priceUsd });
+          setQueue(prev => prev.filter(q => q.id !== queueItem.id));
+          setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
+          buyFiringRef.current.delete(queueItem.id);
+          return;
+        }
+
+        // headroom / drag gate
+        if (settings.entryHeadroomEnabled ?? true) {
+          const maxDrag = settings.maxEntryDragPct ?? 40;
+          const sustainedPrice = getMilestonePrice(queueItem.tokenAddress, "sustained");
+          const queuedPrice = queueItem.priceUsd || null;
+          if (!livePrice) {
+            // Can't verify we're not buying the top → skip, don't gamble.
+            notify(`✕ ${queueItem.symbol} skipped — no live price to verify entry (safety)`, "warn");
+            logMilestone(queueItem.tokenAddress, queueItem.symbol, "skipped_noprice", {});
             setQueue(prev => prev.filter(q => q.id !== queueItem.id));
             setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
             buyFiringRef.current.delete(queueItem.id);
             return;
           }
-        } catch { /* if the check fails, fall through — queue-time filter already passed */ }
-      }
-
-      // ── ENTRY HEADROOM GATE ──────────────────────────────────────────────
-      // The 07-20 data showed the losing trades were bought AT or ABOVE the peak:
-      // entries with <20% headroom went 0/6 (−233%), entries with >20% headroom went
-      // 2/4 (+43%). The filter finds tokens that run ~24% median FROM THE SUSTAINED
-      // TRIGGER — so if price has already run past that, the remaining upside is gone.
-      // Refuse the buy when the run-up above the sustained price is too large.
-      if (settings.entryHeadroomEnabled ?? true) {
-        const sustainedPrice = getMilestonePrice(queueItem.tokenAddress, "sustained");
-        let livePrice = null;
-        try { livePrice = await fetchCurrentPrice(queueItem.tokenAddress); } catch { /* ignore */ }
-        if (sustainedPrice > 0 && livePrice > 0) {
-          const dragPct = ((livePrice - sustainedPrice) / sustainedPrice) * 100;
-          const maxDrag = settings.maxEntryDragPct ?? 40;
-          if (dragPct > maxDrag) {
-            notify(`✕ ${queueItem.symbol} skipped — already ran +${dragPct.toFixed(0)}% `
-              + `above trigger (max ${maxDrag}%); no headroom left`, "warn");
+          const dragVsSustained = sustainedPrice > 0 ? ((livePrice - sustainedPrice) / sustainedPrice) * 100 : null;
+          const dragVsQueued    = queuedPrice   > 0 ? ((livePrice - queuedPrice)   / queuedPrice)   * 100 : null;
+          const drag = Math.max(dragVsSustained ?? -Infinity, dragVsQueued ?? -Infinity);
+          if (drag > maxDrag) {
+            notify(`✕ ${queueItem.symbol} skipped — ran +${drag.toFixed(0)}% above entry ref `
+              + `(max ${maxDrag}%); no headroom`, "warn");
             logMilestone(queueItem.tokenAddress, queueItem.symbol, "skipped_drag", { price: livePrice });
             setQueue(prev => prev.filter(q => q.id !== queueItem.id));
             setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
