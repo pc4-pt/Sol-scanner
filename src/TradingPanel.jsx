@@ -225,6 +225,8 @@ function SettingsPanel({ settings, updateSettings }) {
             description="Wait this long before the early stop can fire"/>
           <NumField label="Max hourly pump" field="maxSustainPcH1" min={60} max={300} step={10} suffix="%"
             description="Skip tokens already up more than this on the hour (exhausted pumps)"/>
+          <NumField label="Min hourly pump" field="minSustainPcH1" min={0} max={150} step={5} suffix="%"
+            description="Require at least this hourly pump — edge starts ~70% (pooled data)"/>
           <NumField label="Reversal buy-pressure" field="reversalBpThreshold" min={0.1} max={0.5} step={0.05}
             description="Exit if buy-pressure drops to/below this (0.30 = 70% sells)"/>
           <NumField label="Reversal price drop" field="reversalPcThreshold" min={-30} max={-2} step={1} suffix="%"
