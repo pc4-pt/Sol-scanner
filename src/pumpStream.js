@@ -11,6 +11,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
 import { fetchTokenActivity, computeTiming } from "./tradingEngine.js";
 import { logMilestone, recordPeak, recordFeatures } from "./lifecycleLog.js";
+import { recordGraduation, recordGradSnapshot, recordCreatorEvent } from "./discoveryLog.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -129,6 +130,8 @@ export function useLaunchStream({
   const engineRef = useRef(null);
   const launchesRef = useRef([]);
   const trackRef = useRef(new Map());   // mint -> passive peak-tracking state
+  const gradTrackRef = useRef(new Map());       // mint -> post-graduation path tracking
+  const discoveryEnabledRef = useRef(true);     // passive; on by default, cheap
   useEffect(() => { launchesRef.current = launches; }, [launches]);
   const cfgRef = useRef({});
   useEffect(() => {
@@ -150,7 +153,30 @@ export function useLaunchStream({
       onMigration: (mg) => {
         setMigrations((n) => n + 1);
         setStats(engine.history.stats());
-        setLaunches((prev) => prev.map((x) => x.mint === mg.mint ? { ...x, graduated: true } : x));
+        setLaunches((prev) => prev.map((x) => {
+          if (x.mint !== mg.mint) return x;
+          // DISCOVERY (passive): record the graduation event + seed post-grad tracking.
+          // Wrapped so any failure here can never affect the live feed / trading.
+          try {
+            if (discoveryEnabledRef.current) {
+              recordGraduation(x.mint, x.symbol, {
+                creator: x.creator || "",
+                venue: (mg.pool || mg.venue || "").toString(),
+                launchToGradSec: x.ts ? Math.round((Date.now() - x.ts) / 1000) : "",
+                priceAtGrad: x.eligibility?.priceUsd ?? "",
+                mcapAtGrad: x.eligibility?.marketCap ?? "",
+                peakBeforeGrad: x.peakPct ?? "",
+                f_devSol: x.f_devSol ?? x.devSol ?? "",
+                f_priorGrads: x.f_priorGrads ?? x.priorGrads ?? "",
+                f_priorCount: x.f_priorCount ?? x.priorCount ?? "",
+                f_buyRatio: x.eligibility?.buyRatio ?? "",
+              });
+              if (x.creator) recordCreatorEvent(x.creator, "graduated");
+              gradTrackRef.current.set(x.mint, { symbol: x.symbol, creator: x.creator || "", gradAt: Date.now(), done: {} });
+            }
+          } catch { /* discovery must never break the feed */ }
+          return { ...x, graduated: true };
+        }));
       },
       onStatus: setStatus,
     });
@@ -205,6 +231,14 @@ export function useLaunchStream({
             const sustainedSince = timing === "sustained" ? (prevSince || Date.now()) : null;
             if (timing === "sustained") {
               logMilestone(x.mint, x.symbol, "sustained", { price: res.priceUsd });
+              // DISCOVERY (passive): tally this creator's sustained count once per token,
+              // so the creator ledger has a denominator for graduation rate.
+              try {
+                if (discoveryEnabledRef.current && x.creator && !x._discSustained) {
+                  x._discSustained = true;
+                  recordCreatorEvent(x.creator, "sustained");
+                }
+              } catch {}
               // liquidity: DexScreener usd is often empty for fresh pump pairs — fall
               // back to the SOL side of the pool as the liquidity measure.
               const liqUsd = res.liq || 0;
@@ -260,6 +294,7 @@ export function useLaunchStream({
   }, [enabled]);
 
   usePeakTracker(trackRef, enabled, minSustainedAgeSec);
+  useGradTracker(gradTrackRef, enabled);
 
   const clear = useCallback(() => setLaunches([]), []);
   return { launches, status, stats, migrations, clear };
@@ -269,6 +304,66 @@ export function useLaunchStream({
 // to record the max upside that followed — a paper-trade dataset for whether the
 // opportunity is real. Uses DexScreener only (no Jupiter load). Defined as a hook
 // helper so it shares the trackRef populated when tokens hit sustained.
+// Post-graduation path tracker: after a token graduates, snapshot its price/pressure at
+// fixed offsets (t+1/5/15/30/60m) so we can later ask "what do graduated tokens DO?".
+// Fully passive research capture; bounded concurrency to respect the DexScreener limit.
+function useGradTracker(gradTrackRef, enabled) {
+  useEffect(() => {
+    if (!enabled) return;
+    const OFFSETS = [
+      { label: "t+1m", ms: 60_000 }, { label: "t+5m", ms: 300_000 },
+      { label: "t+15m", ms: 900_000 }, { label: "t+30m", ms: 1_800_000 },
+      { label: "t+60m", ms: 3_600_000 },
+    ];
+    const iv = setInterval(async () => {
+      const map = gradTrackRef.current;
+      if (!map.size) return;
+      const now = Date.now();
+      // poll only a bounded number per tick, stalest first
+      const entries = [...map.entries()].sort((a, b) => (a[1].lastSeen || 0) - (b[1].lastSeen || 0));
+      for (const [mint, t] of entries.slice(0, 4)) {
+        t.lastSeen = now;
+        const age = now - t.gradAt;
+        // which offsets are due and not yet captured?
+        const due = OFFSETS.filter(o => age >= o.ms && !t.done[o.label]);
+        if (!due.length) {
+          if (age > 3_600_000 + 120_000) map.delete(mint); // done after last offset
+          continue;
+        }
+        try {
+          const act = await fetchTokenActivity(mint);
+          if (act) {
+            const bp = act.trades5m > 0 ? act.buys5m / act.trades5m : "";
+            const g = getGradPrice(mint);
+            const pcFromGrad = (g && act.priceUsd) ? ((act.priceUsd - g) / g) * 100 : "";
+            for (const o of due) {
+              recordGradSnapshot(mint, o.label, {
+                price: act.priceUsd, volH1: act.volH1, bp,
+                liq: act.liq, pcFromGrad: pcFromGrad === "" ? "" : +pcFromGrad.toFixed(1),
+              });
+              t.done[o.label] = true;
+              // creator dump/survive verdict at the 15m mark
+              if (o.label === "t+15m" && t.creator) {
+                recordCreatorEvent(t.creator, (pcFromGrad !== "" && pcFromGrad <= -50) ? "dumped" : "survived");
+              }
+            }
+          }
+        } catch { /* passive — skip this tick */ }
+      }
+    }, 8000);
+    return () => clearInterval(iv);
+  }, [enabled, gradTrackRef]);
+}
+
+// price at graduation, read back from the discovery store
+function getGradPrice(mint) {
+  try {
+    const db = JSON.parse(localStorage.getItem("discovery_graduations_v1") || "{}");
+    const p = db[mint]?.priceAtGrad;
+    return (typeof p === "number" && p > 0) ? p : null;
+  } catch { return null; }
+}
+
 function usePeakTracker(trackRef, enabled, minReadySec = 75) {
   const readyRef = useRef(minReadySec);
   useEffect(() => { readyRef.current = minReadySec; }, [minReadySec]);

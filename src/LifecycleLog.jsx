@@ -1,6 +1,7 @@
 // LifecycleLog.jsx — the measured view of the buy window.
 import { useState, useEffect } from "react";
 import { getLog, deriveRow, summary, clearLog, downloadCSV } from "./lifecycleLog.js";
+import { downloadGraduationsCSV, downloadCreatorsCSV } from "./discoveryLog.js";
 
 const fmtS = (v) => (v == null || v === "" ? "—" : `${Number(v).toFixed(0)}s`);
 const fmtPct = (v) => (v == null || v === "" ? "—" : `${Number(v) >= 0 ? "+" : ""}${Number(v).toFixed(0)}%`);
@@ -126,6 +127,14 @@ export function LifecycleLog() {
         <button onClick={downloadCSV} style={{ background: "var(--accent,#00e5c3)", color: "#06121a",
           border: "none", borderRadius: 6, padding: "6px 14px", fontSize: "0.62rem", fontWeight: 700,
           fontFamily: "var(--font-mono,monospace)", cursor: "pointer" }}>⬇ DOWNLOAD CSV</button>
+        <button onClick={downloadGraduationsCSV} style={{ background: "transparent",
+          border: "1px solid #b8f542", color: "#b8f542", borderRadius: 6, padding: "6px 14px",
+          fontSize: "0.62rem", fontWeight: 700, fontFamily: "var(--font-mono,monospace)", cursor: "pointer" }}
+          title="Discovery: graduation events + post-grad price path">⬇ GRADUATIONS</button>
+        <button onClick={downloadCreatorsCSV} style={{ background: "transparent",
+          border: "1px solid #b8f542", color: "#b8f542", borderRadius: 6, padding: "6px 14px",
+          fontSize: "0.62rem", fontWeight: 700, fontFamily: "var(--font-mono,monospace)", cursor: "pointer" }}
+          title="Discovery: per-creator graduation + dump ledger">⬇ CREATORS</button>
         <button onClick={() => { if (confirm("Clear all lifecycle data?")) { clearLog(); tick(n => n + 1); } }}
           style={{ background: "transparent", border: "1px solid var(--border)", color: "var(--muted)",
           borderRadius: 6, padding: "6px 14px", fontSize: "0.62rem", fontFamily: "var(--font-mono,monospace)",
