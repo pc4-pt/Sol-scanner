@@ -7,7 +7,7 @@ import {
   DEFAULT_TRADE_SETTINGS, PRICE_POLL_MS,
 } from "./tradingEngine.js";
 import { checkTokenSafety } from "./safety.js";
-import { pumpPortalTrade, getTokenBalance, getTxSolDelta } from "./pumpPortal.js";
+import { pumpPortalTrade, getTokenBalance, getTxSolDelta, getSolBalance } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
 import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
@@ -27,7 +27,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 8;
+const SETTINGS_VERSION = 10;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -41,7 +41,9 @@ function loadSettings() {
       "entryHeadroomEnabled", "maxEntryDragPct", "minSustainedAgeSec",
       "momentumReversalExit", "reversalBpThreshold", "reversalPcThreshold", "reversalMinTrades",
       "graceSec", "reversalGraceSec",
-      "earlyStopPct", "earlyStopGraceSec", "maxSustainPcH1", "minSustainPcH1"];
+      "earlyStopPct", "earlyStopGraceSec", "maxSustainPcH1", "minSustainPcH1",
+      "autoExecute", "autoBuyMinBurnerSOL", "maxConcurrentPositions",
+      "autoBuySessionCapSOL", "autoBuyDailyLossKillSOL"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -488,6 +490,99 @@ export function useTrading() {
       buyFiringRef.current.delete(queueItem.id);
     }
   }, [effConnected, effPublicKey, effSignTransaction, connection, positions, settings, notify]);
+
+  // ── AUTO-BUY DRIVER ────────────────────────────────────────────────────────
+  // When autoExecute is ON, automatically buy newly-queued tokens — but only through a
+  // stack of hard safety rails. Every rail is a REASON NOT to buy; all must pass. The
+  // existing entry gates (drag / pcH1 / headroom) still run inside executeBuy, so
+  // automation never bypasses the filters — it only removes the manual click.
+  const autoBuyAttemptedRef = useRef(new Set());   // queue ids we've already auto-fired
+  const autoBuySpentRef     = useRef(0);           // SOL spent by auto-buy this session
+  const autoBuyHaltedRef    = useRef(false);       // kill-switch latch
+  const autoBuyBusyRef      = useRef(false);       // one auto-buy at a time
+  useEffect(() => {
+    if (!(settings.autoExecute ?? false)) return;
+    if (!effConnected || !effPublicKey || !effSignTransaction) return;
+    if (autoBuyBusyRef.current) return;
+    if (autoBuyHaltedRef.current) return;
+
+    // find the oldest queued item we haven't auto-attempted yet
+    const candidate = [...queue].reverse().find(q => !autoBuyAttemptedRef.current.has(q.id));
+    if (!candidate) return;
+
+    autoBuyBusyRef.current = true;
+    (async () => {
+      try {
+        const s = settingsRef.current;
+        const stake = candidate.stakeSOL ?? s.stakeSOL ?? 0.1;
+
+        // RAIL 1 — max concurrent open positions
+        const openCount = positionsRef.current.filter(p => p.status === "open").length;
+        if (openCount >= (s.maxConcurrentPositions ?? 3)) {
+          return; // leave it queued; a manual buy is still possible
+        }
+
+        // RAIL 2 — daily-loss kill switch (realised losses since local midnight)
+        const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+        const todayPnl = (positionsRef.current)
+          .filter(p => p.status === "closed" && (p.closedAt || 0) >= midnight.getTime())
+          .reduce((a, p) => a + (p.pnlSol || 0), 0);
+        if (todayPnl <= -Math.abs(s.autoBuyDailyLossKillSOL ?? 0.3)) {
+          if (!autoBuyHaltedRef.current) {
+            autoBuyHaltedRef.current = true;
+            notify(`⛔ Auto-buy HALTED — daily loss ${todayPnl.toFixed(3)} SOL hit kill switch. `
+              + `Toggle auto-execute off/on to resume.`, "error");
+          }
+          return;
+        }
+
+        // RAIL 3 — per-session spend cap
+        if (autoBuySpentRef.current + stake > (s.autoBuySessionCapSOL ?? 0.5)) {
+          notify(`Auto-buy paused — session cap ${s.autoBuySessionCapSOL ?? 0.5} SOL reached `
+            + `(spent ${autoBuySpentRef.current.toFixed(3)}).`, "warn");
+          autoBuyHaltedRef.current = true;
+          return;
+        }
+
+        // RAIL 4 — burner balance floor (bounds max total spend to balance - floor)
+        let bal = null;
+        try { bal = await getSolBalance(connection, effPublicKey); } catch { /* treat as unknown */ }
+        const floor = s.autoBuyMinBurnerSOL ?? 0.05;
+        if (bal == null) {
+          notify(`Auto-buy skipped ${candidate.symbol} — can't read burner balance (safety)`, "warn");
+          autoBuyAttemptedRef.current.add(candidate.id);
+          return;
+        }
+        if (bal - stake < floor) {
+          notify(`Auto-buy stopped — burner ${bal.toFixed(3)} SOL would drop below floor `
+            + `${floor} SOL. Fund the burner or lower the floor to continue.`, "warn");
+          autoBuyHaltedRef.current = true;
+          return;
+        }
+
+        // All rails passed — fire the real buy (executeBuy still runs the entry gates).
+        autoBuyAttemptedRef.current.add(candidate.id);
+        autoBuySpentRef.current += stake;
+        notify(`🤖 Auto-buying ${candidate.symbol} (${stake} SOL) — `
+          + `${openCount + 1}/${s.maxConcurrentPositions ?? 3} slots, `
+          + `${autoBuySpentRef.current.toFixed(3)}/${s.autoBuySessionCapSOL ?? 0.5} SOL session`, "info");
+        await executeBuy(candidate);
+      } catch (e) {
+        console.warn("[autoBuy] driver error", e);
+      } finally {
+        autoBuyBusyRef.current = false;
+      }
+    })();
+  }, [queue, settings.autoExecute, effConnected, effPublicKey, effSignTransaction, connection, executeBuy, notify]);
+
+  // Reset the session spend / kill-switch latch whenever auto-execute is toggled OFF→ON.
+  useEffect(() => {
+    if (settings.autoExecute) {
+      autoBuySpentRef.current = 0;
+      autoBuyHaltedRef.current = false;
+    }
+  }, [settings.autoExecute]);
+
 
   // ── Execute sell ──────────────────────────────────────────────────────────
   // ── Native sell with escalating slippage ──────────────────────────────────

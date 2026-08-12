@@ -448,9 +448,10 @@ export const DEFAULT_TRADE_SETTINGS = {
   // ── Sustained persistence gate ───────────────────────────────────────────
   // Token must hold sustained CONTINUOUSLY this long before it can be queued.
   // Data: fading inside 90s → 17-30% hit +20%; holding 90-300s → 60%.
-  minSustainedAgeSec:   90,       // 90s gate — pooled 4,273-token analysis: tokens sustained
-                                  // 90-180s hit +20% at 47% / +50% at 30%, vs 11-27% under 90s.
-                                  // Entering at 30s was too early; 90s ~doubles the hit rate.
+  minSustainedAgeSec:   75,       // 75s gate (middle path). Persistence data: 90-180s tokens
+                                  // hit +20% at 47% vs 11-27% under 90s. But 90s + the narrow
+                                  // pcH1 band only passed 0.8% of tokens (zero flow for 24h), so
+                                  // 75s trades a little persistence edge for workable flow.
   takeProfitPct:      100,        // backstop only — let trailing handle common exits so the
                                   // fat tail (+100–325%) isn't capped; a low fixed TP would
                                   // clip the rare runners that carry the strategy's EV
@@ -504,7 +505,15 @@ export const DEFAULT_TRADE_SETTINGS = {
   // ── Sizing ──────────────────────────────────────────────────────────────
   scaleByConfidence:  true,
   cooldownMinutes:    30,
-  autoExecute:        false,
+  autoExecute:        false,      // MASTER auto-buy toggle. When on, a newly-queued token
+                                  // is bought automatically (subject to all rails below).
+                                  // OFF by default — enable only with a small capped burner.
+  // ── Auto-buy safety rails (only apply when autoExecute is on) ────────────
+  autoBuyMinBurnerSOL: 0.05,      // never auto-buy if it would leave the burner below this —
+                                  // bounds max spend to (balance - floor)
+  maxConcurrentPositions: 3,      // never hold more than this many open auto-bought positions
+  autoBuySessionCapSOL: 0.5,      // stop auto-buying after this much SOL spent this session
+  autoBuyDailyLossKillSOL: 0.3,   // halt auto-buy if today's realised loss exceeds this (kill switch)
   // ── Token safety (RugCheck) — KEPT: protection, not alpha ────────────────
   enableSafetyCheck:  true,
   maxRiskScore:       60,
@@ -525,10 +534,9 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // if it's never been up to break-even (caps the -40/-77% killers)
   earlyStopGraceSec:  8,          // …but give it this many seconds first, to avoid entry noise
   // ── Actionable-filter pcH1 ceiling — skip exhausted pumps ────────────────
-  maxSustainPcH1:     150,        // pooled data: pcH1 70-150 was the SWEET SPOT (57-60% hit
-                                  // +15%), NOT the danger zone. The recent 100 ceiling was
-                                  // fitted to a noisy 12-trade batch — the 4,273-token sample
-                                  // says 70-150 is where the upside concentrates.
+  maxSustainPcH1:     180,        // ceiling widened 150->180 (middle path). Pooled data shows
+                                  // higher pcH1 isn't harmful; widening restores flow lost to
+                                  // the 90s hold gate. Set high rather than removed as a guard.
   breakEvenAtPct:     5,
   // ── Trailing take-profit — KEPT: exit logic, never falsified ─────────────
   trailingEnabled:    true,       // disable fixed TP once trailing activates
@@ -554,9 +562,9 @@ export const DEFAULT_TRADE_SETTINGS = {
   // Actionable filter (from the optimiser: non-mayhem + pcH1>=40 + volH1>=1500 → ~60%
   // hit-rate vs 17% baseline). Applied as a flag for auto-queue + feed marker; failing
   // tokens are still paper-tracked as a control group.
-  minSustainPcH1:     70,         // require 1h price change >= this% at sustained. Raised 40→70:
-                                  // pooled data shows the 40-70 band underperforms (43% hit +15%)
-                                  // vs 70-150 (57-60%) — the edge starts around +70% on the hour.
+  minSustainPcH1:     50,         // floor eased 70->50 (middle path). 70/150/90s passed only
+                                  // 0.8% of tokens; 50/180/75s lands ~4-6/day. 70-150 remains the
+                                  // sweet spot, so revisit tightening the floor if flow allows.
   minSustainVolH1:    1500,       // require 1h volume >= $ this at sustained
   // ── Notifications — KEPT ─────────────────────────────────────────────────
   notifyBrowser:      true,       // push notifications when tab is backgrounded
