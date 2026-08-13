@@ -356,13 +356,17 @@ export function useTrading() {
           return;
         }
 
-        // headroom / drag gate
+        // headroom / drag gate — measures the run-up between QUEUE and EXECUTION (the real
+        // execution risk: a token spiking in the seconds before the buy lands, as MDUDAS did).
+        // NOT measured against the "sustained" milestone: that price is now ~75s stale (the
+        // sustained-gate hold), so the token has legitimately climbed above it — that run-up
+        // is the momentum we're SELECTING for, not a reason to skip. Over-extension on the
+        // hour is handled separately by the pcH1 ceiling above.
         if (settings.entryHeadroomEnabled ?? true) {
           const maxDrag = settings.maxEntryDragPct ?? 40;
-          const sustainedPrice = getMilestonePrice(queueItem.tokenAddress, "sustained");
           const queuedPrice = queueItem.priceUsd || null;
           if (!livePrice) {
-            // Can't verify we're not buying the top → skip, don't gamble.
+            // Can't verify we're not buying a spike → skip, don't gamble.
             notify(`✕ ${queueItem.symbol} skipped — no live price to verify entry (safety)`, "warn");
             logMilestone(queueItem.tokenAddress, queueItem.symbol, "skipped_noprice", {});
             setQueue(prev => prev.filter(q => q.id !== queueItem.id));
@@ -370,12 +374,10 @@ export function useTrading() {
             buyFiringRef.current.delete(queueItem.id);
             return;
           }
-          const dragVsSustained = sustainedPrice > 0 ? ((livePrice - sustainedPrice) / sustainedPrice) * 100 : null;
-          const dragVsQueued    = queuedPrice   > 0 ? ((livePrice - queuedPrice)   / queuedPrice)   * 100 : null;
-          const drag = Math.max(dragVsSustained ?? -Infinity, dragVsQueued ?? -Infinity);
+          const drag = queuedPrice > 0 ? ((livePrice - queuedPrice) / queuedPrice) * 100 : 0;
           if (drag > maxDrag) {
-            notify(`✕ ${queueItem.symbol} skipped — ran +${drag.toFixed(0)}% above entry ref `
-              + `(max ${maxDrag}%); no headroom`, "warn");
+            notify(`✕ ${queueItem.symbol} skipped — spiked +${drag.toFixed(0)}% since queued `
+              + `(max ${maxDrag}%); buying into a spike`, "warn");
             logMilestone(queueItem.tokenAddress, queueItem.symbol, "skipped_drag", { price: livePrice });
             setQueue(prev => prev.filter(q => q.id !== queueItem.id));
             setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
