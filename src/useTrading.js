@@ -1156,11 +1156,17 @@ export function useTrading() {
       source, score: launch.score, devSol: launch.devSol,
       price: launch.eligibility?.priceUsd,
     });
-    let priceUsd = 0;
-    try {
-      const solUsd = await getSolUsd();
-      if (launch.priceSol > 0 && solUsd > 0) priceUsd = launch.priceSol * solUsd;
-    } catch { /* leave 0 — display falls back gracefully */ }
+    // Queued price MUST be the LIVE price at queue time — eligibility.priceUsd is updated
+    // every poll. Using launch.priceSol (frozen at first sighting) made the drag gate
+    // measure run-up since the token FIRST appeared, not since we queued it, so anything
+    // that had pumped got skipped as "buying a spike" (+98% false drag).
+    let priceUsd = launch.eligibility?.priceUsd || 0;
+    if (!priceUsd) {
+      try {
+        const solUsd = await getSolUsd();
+        if (launch.priceSol > 0 && solUsd > 0) priceUsd = launch.priceSol * solUsd;
+      } catch { /* leave 0 — display falls back gracefully */ }
+    }
 
     const token = {
       baseToken:   { address: launch.mint, symbol: launch.symbol, name: launch.name },
