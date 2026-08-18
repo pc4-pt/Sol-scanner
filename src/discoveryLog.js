@@ -96,6 +96,74 @@ export function recordCreatorEvent(creator, kind) {
 export function getGraduations() { return Object.values(loadGrad()); }
 export function getCreators() { return Object.values(loadCreators()); }
 
+// ── TRAJECTORY: multi-point snapshots after the ready/sustained point ────────
+// Every existing f_* feature is ONE snapshot taken ~3 min after launch, so we can't
+// tell a token that's accelerating from one that's stalling. (And because these tokens
+// are 2-9 min old, DexScreener's "5m" and "1h" windows return the SAME number — 99% of
+// rows identical — so no acceleration signal exists in the current capture.)
+// This records price/volume/buy-pressure at ready, +1m, +3m, +5m so the SHAPE of the
+// move becomes a feature. Passive: never read by the trading path.
+const TRAJ_KEY = "discovery_trajectory_v1";
+const MAX_TRAJ = 4000;
+function loadTraj() { try { return JSON.parse(localStorage.getItem(TRAJ_KEY) || "{}"); } catch { return {}; } }
+function saveTraj(d) { try { localStorage.setItem(TRAJ_KEY, JSON.stringify(d)); } catch {} }
+
+export function recordTrajectoryStart(mint, symbol, info = {}) {
+  if (!mint) return;
+  const db = loadTraj();
+  if (db[mint]) return;
+  const now = Date.now();
+  db[mint] = {
+    mint, symbol: symbol || "?", readyAt: now, ...timeTags(now),
+    creator: info.creator || "",
+    priceAtReady: info.price ?? "", volAtReady: info.vol ?? "",
+    bpAtReady: info.bp ?? "", liqAtReady: info.liq ?? "",
+    score: info.score ?? "", pcAtReady: info.pc ?? "",
+    path: {},
+  };
+  const keys = Object.keys(db);
+  if (keys.length > MAX_TRAJ) {
+    keys.sort((a, b) => (db[a].readyAt || 0) - (db[b].readyAt || 0));
+    for (let i = 0; i < keys.length - MAX_TRAJ; i++) delete db[keys[i]];
+  }
+  saveTraj(db);
+}
+
+export function recordTrajectorySnapshot(mint, label, snap) {
+  const db = loadTraj();
+  if (!db[mint] || db[mint].path[label] != null) return;
+  const p0 = db[mint].priceAtReady;
+  const v0 = db[mint].volAtReady;
+  db[mint].path[label] = {
+    pc: (p0 > 0 && snap.price > 0) ? +(((snap.price - p0) / p0) * 100).toFixed(2) : "",
+    volMult: (v0 > 0 && snap.vol > 0) ? +(snap.vol / v0).toFixed(2) : "",
+    bp: snap.bp ?? "",
+  };
+  saveTraj(db);
+}
+
+export function getTrajectories() { return Object.values(loadTraj()); }
+
+export function downloadTrajectoryCSV() {
+  const offs = ["t+1m", "t+3m", "t+5m"];
+  const rows = getTrajectories().map(g => {
+    const flat = { ...g }; delete flat.path;
+    flat.readyAtISO = new Date(g.readyAt).toISOString();
+    for (const o of offs) {
+      const p = g.path?.[o] || {};
+      flat[`${o}_pc`] = p.pc ?? "";
+      flat[`${o}_volMult`] = p.volMult ?? "";
+      flat[`${o}_bp`] = p.bp ?? "";
+    }
+    return flat;
+  });
+  const base = ["mint", "symbol", "readyAtISO", "utcHour", "dow", "session", "weekend",
+    "creator", "score", "priceAtReady", "volAtReady", "bpAtReady", "liqAtReady", "pcAtReady"];
+  const pathCols = offs.flatMap(o => [`${o}_pc`, `${o}_volMult`, `${o}_bp`]);
+  download(`discovery-trajectory-${new Date().toISOString().slice(0, 10)}.csv`,
+    csv(rows, [...base, ...pathCols]));
+}
+
 // ── CSV exports ──────────────────────────────────────────────────────────────
 function csv(rows, cols) {
   const head = cols.join(",");

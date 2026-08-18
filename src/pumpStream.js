@@ -11,7 +11,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
 import { fetchTokenActivity, computeTiming } from "./tradingEngine.js";
 import { logMilestone, recordPeak, recordFeatures } from "./lifecycleLog.js";
-import { recordGraduation, recordGradSnapshot, recordCreatorEvent } from "./discoveryLog.js";
+import { recordGraduation, recordGradSnapshot, recordCreatorEvent,
+         recordTrajectoryStart, recordTrajectorySnapshot } from "./discoveryLog.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -131,6 +132,7 @@ export function useLaunchStream({
   const launchesRef = useRef([]);
   const trackRef = useRef(new Map());   // mint -> passive peak-tracking state
   const gradTrackRef = useRef(new Map());       // mint -> post-graduation path tracking
+  const trajTrackRef = useRef(new Map());       // mint -> post-READY trajectory tracking
   const discoveryEnabledRef = useRef(true);     // passive; on by default, cheap
   useEffect(() => { launchesRef.current = launches; }, [launches]);
   const cfgRef = useRef({});
@@ -238,6 +240,18 @@ export function useLaunchStream({
                   x._discSustained = true;
                   recordCreatorEvent(x.creator, "sustained");
                 }
+                // DISCOVERY (passive): begin trajectory capture at the READY point, so we
+                // learn the SHAPE of the move (accelerating vs stalling) rather than one
+                // 3-minute snapshot. Never read by the trading path.
+                if (discoveryEnabledRef.current && !x._trajStarted && res.priceUsd > 0) {
+                  x._trajStarted = true;
+                  recordTrajectoryStart(x.mint, x.symbol, {
+                    creator: x.creator || "", price: res.priceUsd, vol: res.volH1,
+                    bp: res.trades5m > 0 ? +(res.buys5m / res.trades5m).toFixed(3) : "",
+                    liq: res.liqSol, score: x.score, pc: res.priceChangeH1,
+                  });
+                  trajTrackRef.current.set(x.mint, { symbol: x.symbol, readyAt: Date.now(), done: {} });
+                }
               } catch {}
               // liquidity: DexScreener usd is often empty for fresh pump pairs — fall
               // back to the SOL side of the pool as the liquidity measure.
@@ -295,6 +309,7 @@ export function useLaunchStream({
 
   usePeakTracker(trackRef, enabled, minSustainedAgeSec);
   useGradTracker(gradTrackRef, enabled);
+  useTrajectoryTracker(trajTrackRef, enabled);
 
   const clear = useCallback(() => setLaunches([]), []);
   return { launches, status, stats, migrations, clear };
@@ -307,6 +322,47 @@ export function useLaunchStream({
 // Post-graduation path tracker: after a token graduates, snapshot its price/pressure at
 // fixed offsets (t+1/5/15/30/60m) so we can later ask "what do graduated tokens DO?".
 // Fully passive research capture; bounded concurrency to respect the DexScreener limit.
+// Trajectory tracker: after a token hits READY, snapshot it at +1/3/5 min so we can see
+// whether the move is accelerating or stalling AT THE MOMENT WE'D BUY. Bounded
+// concurrency, short-lived (drops each token after 5 min), fully passive.
+function useTrajectoryTracker(trajTrackRef, enabled) {
+  useEffect(() => {
+    if (!enabled) return;
+    const OFFSETS = [
+      { label: "t+1m", ms: 60_000 },
+      { label: "t+3m", ms: 180_000 },
+      { label: "t+5m", ms: 300_000 },
+    ];
+    const iv = setInterval(async () => {
+      const map = trajTrackRef.current;
+      if (!map.size) return;
+      const now = Date.now();
+      const entries = [...map.entries()].sort((a, b) => (a[1].lastSeen || 0) - (b[1].lastSeen || 0));
+      for (const [mint, t] of entries.slice(0, 4)) {
+        t.lastSeen = now;
+        const age = now - t.readyAt;
+        const due = OFFSETS.filter(o => age >= o.ms && !t.done[o.label]);
+        if (!due.length) {
+          if (age > 300_000 + 60_000) map.delete(mint);   // done after the last offset
+          continue;
+        }
+        try {
+          const act = await fetchTokenActivity(mint);
+          if (act) {
+            const bp = act.trades5m > 0 ? +(act.buys5m / act.trades5m).toFixed(3) : "";
+            for (const o of due) {
+              recordTrajectorySnapshot(mint, o.label,
+                { price: act.priceUsd, vol: act.volH1, bp });
+              t.done[o.label] = true;
+            }
+          }
+        } catch { /* passive — skip this tick */ }
+      }
+    }, 10000);
+    return () => clearInterval(iv);
+  }, [enabled, trajTrackRef]);
+}
+
 function useGradTracker(gradTrackRef, enabled) {
   useEffect(() => {
     if (!enabled) return;

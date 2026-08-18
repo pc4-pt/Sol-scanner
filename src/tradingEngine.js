@@ -452,16 +452,22 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // hit +20% at 47% vs 11-27% under 90s. But 90s + the narrow
                                   // pcH1 band only passed 0.8% of tokens (zero flow for 24h), so
                                   // 75s trades a little persistence edge for workable flow.
-  takeProfitPct:      100,        // backstop only — let trailing handle common exits so the
+  takeProfitPct:      15,         // HARD MODEST TARGET. 58% of filtered tokens reach +15% from
+                                  // ready (median time-to-peak 322s, so minutes not seconds).
+                                  // Take the reliable gain instead of holding for the tail.
                                   // fat tail (+100–325%) isn't capped; a low fixed TP would
                                   // clip the rare runners that carry the strategy's EV
   // ── Partial profit-taking — bank a chunk early, let the rest run ─────────
   // Latency-robust: a fixed target fires whenever ANY poll sees price above it, so you
   // lock in gains on the way UP instead of chasing the top on the way down.
-  partialTpEnabled:   true,
+  partialTpEnabled:   false,      // OFF for the modest-target test: the +35% partial trigger sits
+                                  // above the +15% hard TP, so it can never fire. Kept off to keep
+                                  // the experiment unambiguous — one exit mechanism, one reading.
   partialTpPct:       35,         // take partial profit once up this %
   partialTpFraction:  0.5,        // sell this fraction; trail the remainder
-  stopLossPct:        20,
+  stopLossPct:        15,         // tightened 20->15. Breakeven for this strategy is an AVERAGE
+                                  // loss of -20.7%; live STOP_LOSS fills averaged -40% and would
+                                  // sink it. Loss control is now the make-or-break variable.
   slippageBps:        200,
   maxPositions:       5,
   // ── Entry source ────────────────────────────────────────────────────────
@@ -534,12 +540,16 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // if it's never been up to break-even (caps the -40/-77% killers)
   earlyStopGraceSec:  8,          // …but give it this many seconds first, to avoid entry noise
   // ── Actionable-filter pcH1 ceiling — skip exhausted pumps ────────────────
-  maxSustainPcH1:     180,        // ceiling widened 150->180 (middle path). Pooled data shows
+  maxSustainPcH1:     999,        // ceiling effectively OFF. Re-ranked against the +15% target,
+                                  // high pcH1 is NOT harmful: 150-250 hits 39% (2.04x) and 250+
+                                  // still 32%. The old ceiling was cutting good candidates.
                                   // higher pcH1 isn't harmful; widening restores flow lost to
                                   // the 90s hold gate. Set high rather than removed as a guard.
   breakEvenAtPct:     5,
   // ── Trailing take-profit — KEPT: exit logic, never falsified ─────────────
-  trailingEnabled:    true,       // disable fixed TP once trailing activates
+  trailingEnabled:    false,      // OFF for the modest-target test. Trailing arms at +18%, above
+                                  // the +15% TP; if a token GAPPED past 18% in one poll, trailing
+                                  // would take over and suppress the TP. Off = TP always wins.
   trailingActivateAt: 18,         // start trailing at +18% — the paper median winner peaks
                                   // at +26%, so the old +30% activation missed most winners
                                   // (they peaked and faded before trailing ever engaged)
@@ -562,10 +572,17 @@ export const DEFAULT_TRADE_SETTINGS = {
   // Actionable filter (from the optimiser: non-mayhem + pcH1>=40 + volH1>=1500 → ~60%
   // hit-rate vs 17% baseline). Applied as a flag for auto-queue + feed marker; failing
   // tokens are still paper-tracked as a control group.
-  minSustainPcH1:     50,         // floor eased 70->50 (middle path). 70/150/90s passed only
+  minSustainPcH1:     75,         // floor 50->75: below 75 the hit rate sits at base (19-22%);
+                                  // at 75+ it steps up sharply. Combined with vol>=15k this
+                                  // gives 58% hit15 at ~17 candidates/day (flow verified).
                                   // 0.8% of tokens; 50/180/75s lands ~4-6/day. 70-150 remains the
                                   // sweet spot, so revisit tightening the floor if flow allows.
-  minSustainVolH1:    1500,       // require 1h volume >= $ this at sustained
+  minSustainVolH1:    15000,      // VOLUME IS THE DOMINANT SIGNAL for a modest-target strategy.
+                                  // Pooled 4,096-token analysis vs "hits +15% from ready":
+                                  //   volH1 <1.5k -> 10% hit (0.51x lift, 60% of the pool)
+                                  //   volH1 5-15k -> 41% hit (2.14x)
+                                  //   volH1 15-50k -> 57% hit (2.98x)
+                                  // The old 1500 floor let through the bulk of dead tokens.
   // ── Notifications — KEPT ─────────────────────────────────────────────────
   notifyBrowser:      true,       // push notifications when tab is backgrounded
   notifySound:        true,       // play tone for queue/fill/exit/error events

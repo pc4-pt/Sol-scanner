@@ -170,6 +170,11 @@ export function deriveRow(t) {
     // price moves between milestones (the trajectory)
     move_window_pct:    mv("sustained", "fading"),   // total move across the sustained window
     slip_to_buy_pct:    mv("sustained", "bought"),   // how much it ran before you got in
+    // execution-cost instrument: decision price vs actual fill (the ~15pt gap hunt)
+    entry_slip_pct:     t.data?.entry_slip_pct ?? "",
+    decision_price:     t.data?.decisionPrice ?? "",
+    sol_spent:          t.data?.sol_spent ?? "",
+    sol_over_stake:     t.data?.sol_over_stake ?? "",
     after_buy_pct:      mv("bought", "fading"),       // upside still available at your entry
     pnlPct:     t.data?.pnlPct ?? "",
     peakPnlPct: t.data?.peakPnlPct ?? "",

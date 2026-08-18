@@ -27,7 +27,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 10;
+const SETTINGS_VERSION = 11;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -43,7 +43,8 @@ function loadSettings() {
       "graceSec", "reversalGraceSec",
       "earlyStopPct", "earlyStopGraceSec", "maxSustainPcH1", "minSustainPcH1",
       "autoExecute", "autoBuyMinBurnerSOL", "maxConcurrentPositions",
-      "autoBuySessionCapSOL", "autoBuyDailyLossKillSOL"];
+      "autoBuySessionCapSOL", "autoBuyDailyLossKillSOL",
+      "minSustainVolH1", "takeProfitPct", "trailingEnabled"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -338,10 +339,12 @@ export function useTrading() {
       // price fetch failed, which is how MDUDAS (76% drag) slipped through and lost -88%.
       // Drag is measured against BOTH the sustained trigger AND the queued price, taking
       // the larger — so a run-up before OR after queueing is caught.
+      let decisionPriceUsd = null;   // price we SAW when deciding — vs the price we FILL at
       {
         let actNow = null;
         try { actNow = await fetchTokenActivity(queueItem.tokenAddress); } catch { /* handled below */ }
         const livePrice = actNow?.priceUsd || null;
+        decisionPriceUsd = livePrice;
         const pcH1now   = actNow?.priceChangeH1;
 
         // pcH1 ceiling (exhausted-pump guard)
@@ -464,7 +467,26 @@ export function useTrading() {
 
       setPositions(prev => [position, ...prev]);
       setQueue(prev => prev.filter(q => q.id !== queueItem.id));
-      logMilestone(queueItem.tokenAddress, queueItem.symbol, "bought", { entryPrice, price: entryPrice });
+      // ── EXECUTION COST INSTRUMENT ────────────────────────────────────────
+      // The whole strategy question is where the ~15 points between paper edge and
+      // realised P&L go. Measure it directly: the price we DECIDED on vs the price we
+      // actually FILLED at, plus the SOL the curve/fees took beyond the intended stake.
+      const entrySlipPct = (decisionPriceUsd && entryPrice)
+        ? ((entryPrice - decisionPriceUsd) / decisionPriceUsd) * 100 : null;
+      const feeSol = (queueItem.stakeSOL != null) ? (actualSolSpent - queueItem.stakeSOL) : null;
+      if (entrySlipPct != null) {
+        console.warn(`[execcost] ${queueItem.symbol} entry slip ${entrySlipPct >= 0 ? "+" : ""}`
+          + `${entrySlipPct.toFixed(1)}% (decided ${decisionPriceUsd.toExponential(3)} → `
+          + `filled ${entryPrice.toExponential(3)})`
+          + (feeSol != null ? ` · SOL over stake ${feeSol >= 0 ? "+" : ""}${feeSol.toFixed(4)}` : ""));
+      }
+      logMilestone(queueItem.tokenAddress, queueItem.symbol, "bought", {
+        entryPrice, price: entryPrice,
+        decisionPrice: decisionPriceUsd ?? "",
+        entry_slip_pct: entrySlipPct != null ? +entrySlipPct.toFixed(2) : "",
+        sol_spent: +actualSolSpent.toFixed(6),
+        sol_over_stake: feeSol != null ? +feeSol.toFixed(6) : "",
+      });
 
       const slNote = adaptiveSL !== queueItem.stopLossPct
         ? ` · SL widened to ${adaptiveSL}% (volatility ${entryVol.toFixed(0)})`
