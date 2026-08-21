@@ -430,11 +430,18 @@ export function shouldTriggerExit(position, currentPrice, opts = {}) {
 export const DEFAULT_TRADE_SETTINGS = {
   stakeSOL:           0.1,
   // ── Native execution (PumpPortal, sole path for launch trades) ───────────
-  pumpSlippage:       15,         // percent slippage allowed on the bonding curve
+  pumpSlippage:       5,          // 15 -> 5. With a +15% target, authorising fills up to 15%
+                                  // worse than quote lets slippage eat the ENTIRE edge before
+                                  // the trade starts. A missed buy costs nothing; a 15% overpay
+                                  // costs the whole trade. Expect some buys to fail — that is
+                                  // the point, and failures are now cheap information.         // percent slippage allowed on the bonding curve
   // Exit slippage ladder — capped at 25%. The old [15,25,40,60] ladder DID complete
   // exits, but filled so badly that a 20% stop realised −50 to −60%. Better to fail
   // an exit and retry than to dump at 60% slippage.
-  sellSlippageLadder: [15, 25],
+  sellSlippageLadder: [5, 10],    // was [15,25]. Exits were authorised to give up 15-25% — on a
+                                  // +15% target that hands back the entire gain at the door.
+                                  // Escalates 5% then 10%; graduated-token routing still falls
+                                  // through pools, so a genuinely illiquid exit still completes.
   gradSellMaxRetries: 20,         // graduated tokens 400 transiently while migrating to
                                   // PumpSwap; keep auto-retrying the exit this many polls
                                   // before marking stuck (other failures give up after 3)
@@ -448,7 +455,13 @@ export const DEFAULT_TRADE_SETTINGS = {
   // ── Sustained persistence gate ───────────────────────────────────────────
   // Token must hold sustained CONTINUOUSLY this long before it can be queued.
   // Data: fading inside 90s → 17-30% hit +20%; holding 90-300s → 60%.
-  minSustainedAgeSec:   75,       // 75s gate (middle path). Persistence data: 90-180s tokens
+  minSustainedAgeSec:   75,       // REVERTED 25 -> 75. The 25s change rested on a +0.87
+                                  // correlation between entry slip and drag — but BOTH metrics
+                                  // are computed from entryPrice, so an inflated entryPrice
+                                  // moves them together automatically. Spurious by construction.
+                                  // Clean paper data points the other way: tokens that had run
+                                  // 20-50% before ready hit +15% at 50% vs 13% for 0-20%.
+                                  // Held at 75 so the entry-price fix is the only changed variable.       // 75s gate (middle path). Persistence data: 90-180s tokens
                                   // hit +20% at 47% vs 11-27% under 90s. But 90s + the narrow
                                   // pcH1 band only passed 0.8% of tokens (zero flow for 24h), so
                                   // 75s trades a little persistence edge for workable flow.
@@ -469,7 +482,9 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // loss of -20.7%; live STOP_LOSS fills averaged -40% and would
                                   // sink it. Loss control is now the make-or-break variable.
   slippageBps:        200,
-  maxPositions:       5,
+  maxPositions:       3,          // aligned with maxConcurrentPositions (was 5 vs 3 — two
+                                  // different caps on the same thing, manual and auto paths
+                                  // disagreeing). Same number now, whichever path opens it.
   // ── Entry source ────────────────────────────────────────────────────────
   // "launch"   = t=0 launch-score stream (PumpPortal). The validated LEADING signal.
   // "momentum" = legacy DexScreener momentum (DEPRECATED — no leading edge; fires
@@ -509,7 +524,9 @@ export const DEFAULT_TRADE_SETTINGS = {
   requireMomentum:    true,
   confirmScans:       2,          // the "wait for a second sighting" gate = the too-late mechanism
   // ── Sizing ──────────────────────────────────────────────────────────────
-  scaleByConfidence:  true,
+  scaleByConfidence:  false,      // OFF for the test. Varying stake per trade makes per-trade
+                                  // expectancy noisy and hard to attribute. Fixed stake = clean
+                                  // reading of whether the edge is net-positive.
   cooldownMinutes:    30,
   autoExecute:        false,      // MASTER auto-buy toggle. When on, a newly-queued token
                                   // is bought automatically (subject to all rails below).
@@ -527,7 +544,11 @@ export const DEFAULT_TRADE_SETTINGS = {
   blockHardFails:     true,
   blockHighOwnership: true,
   // ── Position management (Stage A + B) — KEPT ────────────────────────────
-  adaptiveStopLoss:   true,
+  adaptiveStopLoss:   false,      // OFF. computeAdaptiveStopLoss WIDENS the stop to 25/35/45%
+                                  // for volatile tokens — and memecoins are always volatile, so
+                                  // the effective stop was never 15%. Strategy breakeven is an
+                                  // AVERAGE loss of -20.7%, so a 25-45% stop sinks it outright.
+                                  // The configured stop must mean what it says.
   graceSec:           30,         // suppress the -20% price stop this long after entry, to
                                   // avoid getting stopped out by entry noise. Lowered from 60:
                                   // we now enter at the 30s sustained gate (more established
@@ -556,7 +577,9 @@ export const DEFAULT_TRADE_SETTINGS = {
   trailDrawdownPct:   10,         // exit when peak drops by this % (tightened from 15 — real
                                   // trades gave back most of the peak at 15)
   // ── Fast momentum-reversal exit — beats the price stop on fast collapses ──
-  momentumReversalExit: true,
+  momentumReversalExit: false,    // OFF for the test. It is a THIRD exit path competing with
+                                  // the +15% TP and the early stop; if it fires first we can't
+                                  // attribute the result. Re-enable once TP/SL is measured.
   reversalBpThreshold: 0.30,      // exit if buy-pressure ≤ this (≥70% of recent txns are sells)
   reversalPcThreshold: -8,        // …AND 5m price change ≤ this %
   reversalMinTrades:   8,         // require this many 5m trades so buy-pressure is meaningful

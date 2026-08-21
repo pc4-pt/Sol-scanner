@@ -7,7 +7,7 @@ import {
   DEFAULT_TRADE_SETTINGS, PRICE_POLL_MS,
 } from "./tradingEngine.js";
 import { checkTokenSafety } from "./safety.js";
-import { pumpPortalTrade, getTokenBalance, getTxSolDelta, getSolBalance } from "./pumpPortal.js";
+import { pumpPortalTrade, getTokenBalance, getTxSolDelta, getTxTokenDelta, getSolBalance } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
 import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
@@ -27,7 +27,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 11;
+const SETTINGS_VERSION = 13;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -44,7 +44,11 @@ function loadSettings() {
       "earlyStopPct", "earlyStopGraceSec", "maxSustainPcH1", "minSustainPcH1",
       "autoExecute", "autoBuyMinBurnerSOL", "maxConcurrentPositions",
       "autoBuySessionCapSOL", "autoBuyDailyLossKillSOL",
-      "minSustainVolH1", "takeProfitPct", "trailingEnabled"];
+      "minSustainVolH1", "takeProfitPct", "trailingEnabled",
+      "pumpSlippage", "minSustainedAgeSec",
+      // audited conflicts — must not inherit stale values into the test
+      "adaptiveStopLoss", "sellSlippageLadder", "scaleByConfidence",
+      "momentumReversalExit", "maxPositions", "stopLossPct", "earlyStopPct"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -410,7 +414,11 @@ export function useTrading() {
       }
 
       // Measure the ACTUAL fill from the confirmed tx (captures curve slippage + fees)
-      const tokensReceived = await getTokenBalance(connection, effPublicKey, queueItem.tokenAddress);
+      // Prefer the tx's own token delta (settlement-safe); fall back to a balance read.
+      let tokensReceived = await getTxTokenDelta(connection, sig, effPublicKey, queueItem.tokenAddress);
+      if (!(tokensReceived > 0)) {
+        tokensReceived = await getTokenBalance(connection, effPublicKey, queueItem.tokenAddress);
+      }
       const solDelta       = await getTxSolDelta(connection, sig, effPublicKey);   // negative on a buy
       const actualSolSpent = (solDelta != null && solDelta < 0) ? -solDelta : queueItem.stakeSOL;
       const inAmountSol = actualSolSpent;
@@ -430,7 +438,22 @@ export function useTrading() {
       // the DexScreener/seeded price if the balance reads didn't return.
       let entryPrice = queueItem.priceUsd || 0;
       if (outAmount > 0 && solUsd > 0) {
-        entryPrice = (actualSolSpent * solUsd) / outAmount;
+        const derived = (actualSolSpent * solUsd) / outAmount;
+        // SANITY GUARD: a bad token read makes `derived` wildly high, which then biases
+        // every live P&L reading negative and early-stops healthy trades. Real curve
+        // slippage can't plausibly exceed the authorised slippage by much, so if the
+        // derived price is far above what we decided at, distrust it and use the
+        // decision price instead — and say so loudly rather than trading on bad data.
+        const tol = (settings.pumpSlippage ?? 15) * 2 + 20;   // generous ceiling, in %
+        const devPct = decisionPriceUsd ? ((derived - decisionPriceUsd) / decisionPriceUsd) * 100 : 0;
+        if (decisionPriceUsd && devPct > tol) {
+          console.warn(`[execcost] ${queueItem.symbol} derived entry price ${devPct.toFixed(0)}% `
+            + `above decision price — implausible, likely a short token read `
+            + `(tokens=${outAmount}). Using decision price as basis.`);
+          entryPrice = decisionPriceUsd;
+        } else {
+          entryPrice = derived;
+        }
       } else {
         try { const live = await fetchCurrentPrice(queueItem.tokenAddress); if (live) entryPrice = live; }
         catch { /* keep seeded price */ }

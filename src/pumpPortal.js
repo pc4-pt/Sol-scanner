@@ -34,6 +34,34 @@ export async function getTxSolDelta(connection, sig, pubkey) {
   return null;   // caller falls back to an estimate
 }
 
+// Tokens actually received in THIS transaction, read from the tx's own token-balance
+// meta. This is authoritative and settlement-safe, unlike a post-hoc wallet balance
+// read: getTokenBalance() is a single RPC call fired the instant the buy confirms, and
+// the token account frequently hasn't propagated yet. A low/zero read there inflates
+// entryPrice (= solSpent x solUsd / tokensReceived), which then biases EVERY live P&L
+// reading downward — trades look instantly red, peak never registers above 0, and the
+// early stop fires on healthy positions. Read the delta from the tx instead.
+export async function getTxTokenDelta(connection, sig, pubkey, mint) {
+  if (!connection || !sig || !pubkey || !mint) return null;
+  const owner = pubkey.toString();
+  for (let i = 0; i < 15; i++) {
+    try {
+      const tx = await connection.getParsedTransaction(sig, {
+        maxSupportedTransactionVersion: 0, commitment: "confirmed",
+      });
+      if (tx?.meta) {
+        const sum = (arr) => (arr || [])
+          .filter(b => b.mint === mint && b.owner === owner)
+          .reduce((a, b) => a + (b.uiTokenAmount?.uiAmount || 0), 0);
+        const delta = sum(tx.meta.postTokenBalances) - sum(tx.meta.preTokenBalances);
+        if (delta > 0) return delta;
+      }
+    } catch { /* not indexed yet */ }
+    await new Promise(r => setTimeout(r, 1000));
+  }
+  return null;   // caller falls back to the balance read
+}
+
 // Total UI token balance held for a mint (to derive the real fill price)
 export async function getTokenBalance(connection, pubkey, mint) {
   try {
