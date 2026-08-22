@@ -78,7 +78,11 @@ export function LaunchFeed({ trading }) {
   // this is what stops unvalidated/collapsed tokens from ever being auto-bought.
   const seen = useRef(new Set());
   useEffect(() => {
-    if (!s.launchAutoQueue) return;
+    if (!s.launchAutoQueue) {
+      // Loud, not silent: a master switch that is off should never look like "no candidates".
+      console.warn("[autoqueue] DISABLED — launchAutoQueue is off, nothing will queue.");
+      return;
+    }
     const minExec = s.minExecScore ?? 68;
     const minDev  = s.minDevSol ?? 1.0;
     const millN   = s.millMinLaunches ?? 5;

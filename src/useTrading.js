@@ -42,7 +42,11 @@ function loadSettings() {
       "momentumReversalExit", "reversalBpThreshold", "reversalPcThreshold", "reversalMinTrades",
       "graceSec", "reversalGraceSec",
       "earlyStopPct", "earlyStopGraceSec", "maxSustainPcH1", "minSustainPcH1",
-      "autoExecute", "autoBuyMinBurnerSOL", "maxConcurrentPositions",
+      // NOTE: autoExecute is deliberately NOT forced. It was force-disabled once at v10,
+      // when the previously-dead toggle became a real buy trigger. Leaving it in this list
+      // meant EVERY later version bump silently switched auto-buy back off — which is why
+      // trading stopped dead after v12/v13 shipped. The user's choice must persist.
+      "autoBuyMinBurnerSOL", "maxConcurrentPositions",
       "autoBuySessionCapSOL", "autoBuyDailyLossKillSOL",
       "minSustainVolH1", "takeProfitPct", "trailingEnabled",
       "pumpSlippage", "minSustainedAgeSec",
