@@ -5,7 +5,53 @@
 // (pool "auto" picks the right venue), so buy and sell always use the same venue and
 // positions can't get orphaned. We fetch an UNSIGNED transaction, sign it locally with
 // the loaded keypair (no custody handover), and broadcast it ourselves.
-import { VersionedTransaction, PublicKey } from "@solana/web3.js";
+import { VersionedTransaction, PublicKey, Transaction, TransactionInstruction } from "@solana/web3.js";
+
+const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ASSOC_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+
+// Reclaim the ~0.00204 SOL rent locked in an emptied token account.
+//
+// Selling tokens does NOT close the account — it leaves it empty with the rent-exempt
+// deposit still inside. That deposit is ~87% of the observed 0.00235 SOL per-trade
+// "fee", so at a 0.1 SOL stake it is ~2% of every trade stranded in dust accounts.
+// Closing the account returns it. Best-effort and fully non-blocking: this runs AFTER
+// the sell has settled, and any failure here must never affect the trade.
+export async function closeTokenAccount({ connection, pubkey, mint, signTransaction }) {
+  try {
+    if (!connection || !pubkey || !mint || !signTransaction) return null;
+    const mintPk = new PublicKey(mint);
+    const [ata] = PublicKey.findProgramAddressSync(
+      [pubkey.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPk.toBuffer()],
+      ASSOC_TOKEN_PROGRAM_ID,
+    );
+    // Only close if it exists AND is empty — never destroy a position.
+    const info = await connection.getParsedAccountInfo(ata);
+    if (!info?.value) return null;
+    const amt = info.value.data?.parsed?.info?.tokenAmount?.amount;
+    if (amt == null || amt !== "0") return null;
+
+    // SPL Token `CloseAccount` = instruction index 9; accounts: [account, dest, owner]
+    const ix = new TransactionInstruction({
+      programId: TOKEN_PROGRAM_ID,
+      keys: [
+        { pubkey: ata,    isSigner: false, isWritable: true },
+        { pubkey,         isSigner: false, isWritable: true },   // rent refunded to wallet
+        { pubkey,         isSigner: true,  isWritable: false },  // owner authority
+      ],
+      data: new Uint8Array([9]),   // Uint8Array, not Buffer — no Buffer polyfill in this Vite build
+    });
+    const tx = new Transaction().add(ix);
+    tx.feePayer = pubkey;
+    tx.recentBlockhash = (await connection.getLatestBlockhash("confirmed")).blockhash;
+    const signed = await signTransaction(tx);
+    const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
+    return sig;
+  } catch (e) {
+    console.warn("[rent] close account skipped:", e?.message || e);
+    return null;
+  }
+}
 
 // Real SOL balance (for measuring actual spend/receive on the curve, incl. slippage+fees)
 export async function getSolBalance(connection, pubkey) {

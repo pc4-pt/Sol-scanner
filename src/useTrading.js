@@ -7,7 +7,8 @@ import {
   DEFAULT_TRADE_SETTINGS, PRICE_POLL_MS,
 } from "./tradingEngine.js";
 import { checkTokenSafety } from "./safety.js";
-import { pumpPortalTrade, getTokenBalance, getTxSolDelta, getTxTokenDelta, getSolBalance } from "./pumpPortal.js";
+import { pumpPortalTrade, getTokenBalance, getTxSolDelta, getTxTokenDelta, getSolBalance,
+         closeTokenAccount } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
 import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
@@ -27,7 +28,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 13;
+const SETTINGS_VERSION = 14;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -52,7 +53,8 @@ function loadSettings() {
       "pumpSlippage", "minSustainedAgeSec",
       // audited conflicts — must not inherit stale values into the test
       "adaptiveStopLoss", "sellSlippageLadder", "scaleByConfidence",
-      "momentumReversalExit", "maxPositions", "stopLossPct", "earlyStopPct"];
+      "momentumReversalExit", "maxPositions", "stopLossPct", "earlyStopPct",
+      "autoBuySessionCapSOL", "reclaimAccountRent"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -730,6 +732,17 @@ export function useTrading() {
         : Math.max((position.currentPrice / (position.entryPrice || position.currentPrice)) * position.solSpent, 0);
       // total proceeds include any earlier partial take-profit
       const solReceived = finalProceeds + (position.partialProceeds || 0);
+
+      // Reclaim the rent locked in the now-empty token account (~0.00204 SOL, ~87% of the
+      // per-trade fee). Deliberately fire-and-forget AFTER the sell has settled: it must
+      // never delay or endanger the trade itself, and it self-skips if not empty.
+      if (settings.reclaimAccountRent ?? true) {
+        setTimeout(() => {
+          closeTokenAccount({ connection, pubkey: effPublicKey,
+            mint: position.tokenAddress, signTransaction: effSignTransaction })
+            .then(s => { if (s) console.warn(`[rent] reclaimed ~0.00204 SOL from ${position.symbol}`); });
+        }, 5000);
+      }
 
       const pnlSol = solReceived - position.solSpent;
       const pnlPct = position.solSpent > 0 ? (pnlSol / position.solSpent) * 100 : 0;

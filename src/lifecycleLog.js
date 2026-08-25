@@ -158,6 +158,11 @@ export function deriveRow(t) {
     f_ageMin:        t.data?.f_ageMin ?? "",
     f_vol5m:         t.data?.f_vol5m ?? "",
     f_volH1:         t.data?.f_volH1 ?? "",
+    // liquidity WAS captured into features but never exported — needed to size trades
+    // against the real pool rather than an FDV proxy
+    f_liq:           t.data?.f_liq ?? "",
+    f_liqSol:        t.data?.f_liqSol ?? "",
+    f_volLiq:        t.data?.f_volLiq ?? "",
     f_buyRatio5m:    t.data?.f_buyRatio5m ?? "",
     f_buyRatioH1:    t.data?.f_buyRatioH1 ?? "",
     f_pcH1:          t.data?.f_pcH1 ?? "",

@@ -535,8 +535,14 @@ export const DEFAULT_TRADE_SETTINGS = {
   autoBuyMinBurnerSOL: 0.05,      // never auto-buy if it would leave the burner below this —
                                   // bounds max spend to (balance - floor)
   maxConcurrentPositions: 3,      // never hold more than this many open auto-bought positions
-  autoBuySessionCapSOL: 0.5,      // stop auto-buying after this much SOL spent this session
-  autoBuyDailyLossKillSOL: 0.3,   // halt auto-buy if today's realised loss exceeds this (kill switch)
+  reclaimAccountRent: true,       // close the emptied token account after each sell to recover
+                                  // its ~0.00204 SOL rent deposit (~87% of the per-trade fee).
+                                  // Fires after the sell settles; never blocks the trade.
+  autoBuySessionCapSOL: 2.0,      // 0.5 -> 2.0. At the old 0.01 stake this was 50 trades; at
+                                  // 0.1 it was only 5, so the session halted every day or two
+                                  // and looked like a fault. Sized for ~20 trades at 0.1 SOL.      // stop auto-buying after this much SOL spent this session
+  autoBuyDailyLossKillSOL: 0.3,   // unchanged: at 0.1 SOL and ~12% typical losses this is
+                                  // ~25 losing trades — a real circuit breaker, not a nuisance.   // halt auto-buy if today's realised loss exceeds this (kill switch)
   // ── Token safety (RugCheck) — KEPT: protection, not alpha ────────────────
   enableSafetyCheck:  true,
   maxRiskScore:       60,
