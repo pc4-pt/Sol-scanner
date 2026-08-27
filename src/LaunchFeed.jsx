@@ -77,6 +77,7 @@ export function LaunchFeed({ trading }) {
   // Only ELIGIBLE launches (survived the confirmation window, still sellable) are queued —
   // this is what stops unvalidated/collapsed tokens from ever being auto-bought.
   const seen = useRef(new Set());
+  const funnelRef = useRef(0);   // throttles the funnel log to once a minute
   useEffect(() => {
     if (!s.launchAutoQueue) {
       // Loud, not silent: a master switch that is off should never look like "no candidates".
@@ -88,20 +89,32 @@ export function LaunchFeed({ trading }) {
     const millN   = s.millMinLaunches ?? 5;
     const minAgeMs = (s.minSustainedAgeSec ?? 75) * 1000;
     const now = Date.now();
+    // Funnel counters — so "nothing queued" can be diagnosed as quiet-vs-blocked at a glance.
+    const cut = { seen:0, notEligible:0, notSustained:0, tooYoung:0, filter:0, score:0, dev:0, mill:0, queued:0 };
     for (const l of launches) {
-      if (seen.current.has(l.mint)) continue;
-      if (l.eligibility?.state !== "eligible") continue;          // survival gate
-      if (l.eligibility?.timing !== "sustained") continue;       // sustained-momentum gate
+      if (seen.current.has(l.mint)) { cut.seen++; continue; }
+      if (l.eligibility?.state !== "eligible") { cut.notEligible++; continue; }   // survival gate
+      if (l.eligibility?.timing !== "sustained") { cut.notSustained++; continue; } // sustained-momentum gate
       // persistence gate — must have held sustained continuously for minSustainedAgeSec.
       // Data: tokens fading inside 90s hit +20% only 17-30%; those holding 90-300s hit 60%.
       const since = l.eligibility?.sustainedSince;
-      if (!since || now - since < minAgeMs) continue;
-      if (l.eligibility?.passedFilter !== 1) continue;           // actionable filter (non-mayhem + pcH1 + volH1)
-      if (l.score < minExec) continue;
-      if ((l.devSol ?? 0) < minDev) continue;
-      if (s.blockTokenMills && l.priorCount >= millN && (l.priorGrads ?? 0) === 0) continue;
+      if (!since || now - since < minAgeMs) { cut.tooYoung++; continue; }
+      if (l.eligibility?.passedFilter !== 1) { cut.filter++; continue; }           // non-mayhem + pcH1 + volH1
+      if (l.score < minExec) { cut.score++; continue; }
+      if ((l.devSol ?? 0) < minDev) { cut.dev++; continue; }
+      if (s.blockTokenMills && l.priorCount >= millN && (l.priorGrads ?? 0) === 0) { cut.mill++; continue; }
       seen.current.add(l.mint);
+      cut.queued++;
       trading.addLaunchToQueue(l, "auto");
+    }
+    // Report the funnel once a minute rather than every pass (which would spam).
+    if (!funnelRef.current || now - funnelRef.current > 60000) {
+      funnelRef.current = now;
+      console.warn(`[funnel] tracking ${launches.length} | already-seen ${cut.seen} | `
+        + `not-eligible ${cut.notEligible} | not-sustained ${cut.notSustained} | `
+        + `held<${(minAgeMs/1000)}s ${cut.tooYoung} | failed-filter(vol/pcH1) ${cut.filter} | `
+        + `score<${minExec} ${cut.score} | dev<${minDev} ${cut.dev} | mill ${cut.mill} `
+        + `>>> QUEUED ${cut.queued}`);
     }
   }, [launches, s.launchAutoQueue, s.minExecScore, s.minDevSol, s.blockTokenMills, s.millMinLaunches, trading]);
 

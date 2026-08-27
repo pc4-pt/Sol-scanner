@@ -189,6 +189,11 @@ export function deriveRow(t) {
     partial_proceeds:  t.data?.partialProceeds ?? "",
     partial_estimated: t.data?.partialEstimated ? "yes" : "",
     sol_received:      t.data?.solReceived ?? "",
+    // exit-cost instrument: what the exit trigger promised vs what settled
+    trigger_price:     t.data?.trigger_price ?? "",
+    exit_slip_pct:     t.data?.exit_slip_pct ?? "",
+    exit_latency_ms:   t.data?.exit_latency_ms ?? "",
+    expected_proceeds: t.data?.expected_proceeds ?? "",
     // absolute prices at each milestone
     price_eligible:  p.eligible  ?? "", price_sustained: p.sustained ?? "",
     price_queued:    p.queued    ?? "", price_bought:    p.bought    ?? "",

@@ -695,6 +695,12 @@ export function useTrading() {
       return;
     }
     sellFiringRef.current.add(position.id);
+    // EXIT-COST INSTRUMENT: stamp the moment and price the exit DECISION was made, so we
+    // can compare it against what actually settled. A TAKE_PROFIT that triggers at +15%
+    // and lands negative means the gap between trigger and fill ate the trade — and that
+    // is a latency/slippage problem, not something a threshold change can fix.
+    const triggerAt    = Date.now();
+    const triggerPrice = position.currentPrice || null;
 
     setExecuting(prev => ({ ...prev, [position.id]: true }));
     notify(`Selling ${position.symbol} (${reason})…`, "info");
@@ -744,6 +750,27 @@ export function useTrading() {
         }, 5000);
       }
 
+      // ── EXIT-COST MEASUREMENT ────────────────────────────────────────────
+      // What the trigger PROMISED vs what actually settled. Expected proceeds are derived
+      // from the trigger price relative to entry, so this needs no USD conversion and
+      // captures the whole gap: curve slippage on the way out, fees, and price decay
+      // between the trigger firing and the transaction landing.
+      const exitLatencyMs = Date.now() - triggerAt;
+      let exitSlipPct = null, expectedProceeds = null;
+      if (triggerPrice && position.entryPrice > 0 && position.solSpent > 0) {
+        // fraction of the position still held at exit (a partial TP already sold some)
+        const remaining = position.partialTaken
+          ? Math.max(1 - (settings.partialTpFraction ?? 0.5), 0.01) : 1;
+        expectedProceeds = position.solSpent * remaining * (triggerPrice / position.entryPrice);
+        if (expectedProceeds > 0) {
+          exitSlipPct = ((finalProceeds - expectedProceeds) / expectedProceeds) * 100;
+          console.warn(`[exitcost] ${position.symbol} ${reason} — trigger implied `
+            + `${expectedProceeds.toFixed(5)} SOL, got ${finalProceeds.toFixed(5)} `
+            + `(${exitSlipPct >= 0 ? "+" : ""}${exitSlipPct.toFixed(1)}%) `
+            + `after ${(exitLatencyMs / 1000).toFixed(1)}s`);
+        }
+      }
+
       const pnlSol = solReceived - position.solSpent;
       const pnlPct = position.solSpent > 0 ? (pnlSol / position.solSpent) * 100 : 0;
       const sign   = pnlSol >= 0 ? "+" : "";
@@ -773,6 +800,11 @@ export function useTrading() {
         partialProceeds: position.partialProceeds ? parseFloat(position.partialProceeds.toFixed(6)) : "",
         partialEstimated: !!position.partialEstimated,
         solReceived: parseFloat(solReceived.toFixed(6)),
+        // exit-cost instrument
+        trigger_price:    triggerPrice ?? "",
+        exit_slip_pct:    exitSlipPct != null ? +exitSlipPct.toFixed(2) : "",
+        exit_latency_ms:  exitLatencyMs,
+        expected_proceeds: expectedProceeds != null ? +expectedProceeds.toFixed(6) : "",
       });
 
       notify(
