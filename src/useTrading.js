@@ -28,7 +28,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 14;
+const SETTINGS_VERSION = 15;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -54,7 +54,7 @@ function loadSettings() {
       // audited conflicts — must not inherit stale values into the test
       "adaptiveStopLoss", "sellSlippageLadder", "scaleByConfidence",
       "momentumReversalExit", "maxPositions", "stopLossPct", "earlyStopPct",
-      "autoBuySessionCapSOL", "reclaimAccountRent"];
+      "autoBuySessionCapSOL", "reclaimAccountRent", "tpConfirmPolls"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -138,6 +138,7 @@ export function useTrading() {
   // Always-current refs used inside intervals to avoid stale closures
   const positionsRef      = useRef(positions);
   const autoSellFiringRef = useRef(new Set());
+  const tpConfirmRef      = useRef(new Map());   // positionId -> consecutive polls at TP target
   const partialFiringRef  = useRef(new Set());
   // Synchronous guards against double-fire (state setters are async)
   const buyFiringRef      = useRef(new Set());
@@ -291,6 +292,7 @@ export function useTrading() {
     if (!pos) return;
     sellFailCountRef.current.delete(positionId);
     autoSellFiringRef.current.delete(positionId);
+    tpConfirmRef.current.delete(positionId);
     positionAddrsRef.current.delete(pos.tokenAddress);
 
     const closed = {
@@ -1009,6 +1011,27 @@ export function useTrading() {
               executePartialSell({ ...freshP, currentPrice: price },
                 sref.partialTpFraction ?? 0.5, curPct);
             }
+          }
+
+          // ── SPIKE-PRINT CONFIRMATION ─────────────────────────────────────────
+          // Exit-cost data (09-02): TAKE_PROFIT lost a median 11.5% and up to 35.7%
+          // between trigger and fill — with latency of only 1.2-1.8s and NO correlation
+          // to latency. So the loss isn't speed: the 2s poll catches a momentary spike
+          // print that was never tradeable, fires, and the price is gone before the tx
+          // is built. Requiring the target to hold for N consecutive polls filters those
+          // one-tick spikes out. Applies ONLY to profit-taking — loss cuts still fire
+          // immediately, because delaying a stop is the opposite of what we want.
+          if (exit && exit.reason === "TAKE_PROFIT") {
+            const need = settingsRef.current.tpConfirmPolls ?? 2;
+            const seen = (tpConfirmRef.current.get(pos.id) || 0) + 1;
+            tpConfirmRef.current.set(pos.id, seen);
+            if (seen < need) {
+              console.warn(`[tpconfirm] ${pos.symbol} at +${(pnl?.pct ?? 0).toFixed(0)}% `
+                + `— holding for confirmation (${seen}/${need})`);
+              exit = null;   // wait for the next poll to confirm it's a real level
+            }
+          } else if (!exit) {
+            tpConfirmRef.current.delete(pos.id);   // target lost — reset the streak
           }
 
           if (exit && effConnected && effPublicKey

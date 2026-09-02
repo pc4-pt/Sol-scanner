@@ -465,6 +465,10 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // hit +20% at 47% vs 11-27% under 90s. But 90s + the narrow
                                   // pcH1 band only passed 0.8% of tokens (zero flow for 24h), so
                                   // 75s trades a little persistence edge for workable flow.
+  tpConfirmPolls:     2,          // require the TP target to hold for this many consecutive
+                                  // polls (~2s each) before selling. Exit data showed profit
+                                  // exits losing a median 11.5% to spike prints that vanished
+                                  // before the tx was built. Loss cuts are NOT delayed by this.
   takeProfitPct:      15,         // HARD MODEST TARGET. 58% of filtered tokens reach +15% from
                                   // ready (median time-to-peak 322s, so minutes not seconds).
                                   // Take the reliable gain instead of holding for the tail.
