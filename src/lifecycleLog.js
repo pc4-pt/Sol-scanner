@@ -36,7 +36,11 @@ const MAX_TOKENS = 3000;
 // destroyed sustained/paper rows within hours: a day's tracking collapsed to 5 rows.
 function isValuable(row) {
   const e = row?.events || {}, d = row?.data || {};
-  return !!(e.sustained || e.queued || e.bought || e.sold || d.peakPct != null || d.f_captured);
+  // buy_failed rows MUST be protected: they are the record of trades we wanted but
+  // couldn't fill, and pruning them would silently restore the survivorship bias this
+  // capture exists to remove.
+  return !!(e.sustained || e.queued || e.bought || e.sold || e.buy_failed
+            || d.buy_failed || d.peakPct != null || d.f_captured);
 }
 
 function prune(db) {
@@ -177,6 +181,15 @@ export function deriveRow(t) {
     slip_to_buy_pct:    mv("sustained", "bought"),   // how much it ran before you got in
     // execution-cost instrument: decision price vs actual fill (the ~15pt gap hunt)
     entry_slip_pct:     t.data?.entry_slip_pct ?? "",
+    // real bonding-curve reserves (replaces the empty DexScreener liquidity columns)
+    curve_real_sol:      t.data?.curve_real_sol ?? "",
+    curve_virt_sol:      t.data?.curve_virt_sol ?? "",
+    curve_complete:      t.data?.curve_complete ?? "",
+    curve_impact_pct:    t.data?.curve_impact_pct ?? "",
+    curve_max_size_5pct: t.data?.curve_max_size_5pct ?? "",
+    // failed-buy capture (previously invisible — trade log was survivorship-biased)
+    buy_failed:          t.data?.buy_failed ?? "",
+    buy_fail_reason:     t.data?.buy_fail_reason ?? "",
     decision_price:     t.data?.decisionPrice ?? "",
     sol_spent:          t.data?.sol_spent ?? "",
     sol_over_stake:     t.data?.sol_over_stake ?? "",

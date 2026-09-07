@@ -108,6 +108,85 @@ export async function getTxTokenDelta(connection, sig, pubkey, mint) {
   return null;   // caller falls back to the balance read
 }
 
+// Read the pump.fun bonding-curve account directly.
+//
+// Why this exists: a "market cap" or FDV field on a bonding curve is derived from
+// VIRTUAL reserves, not real ones. It tracks price and can rise arbitrarily far above
+// the graduation ceiling while almost no real SOL sits in the curve. Kamat (2026) built
+// a correction on that assumption, found 1,126 apparent graduations, verified 100
+// directly and found ZERO had actually graduated — real reserves were typically a
+// fraction of a SOL. DexScreener also reports no liquidity for fresh curve tokens, so
+// f_liqSol/f_liq have been empty throughout. This reads the truth from chain.
+//
+// Layout (pump.fun BondingCurve account): 8-byte discriminator, then five u64 LE
+// fields — virtualTokenReserves, virtualSolReserves, realTokenReserves,
+// realSolReserves, tokenTotalSupply — then a bool `complete` flag.
+const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+
+export async function getBondingCurveState(connection, mint) {
+  try {
+    if (!connection || !mint) return null;
+    const mintPk = new PublicKey(mint);
+    const [curve] = PublicKey.findProgramAddressSync(
+      [new TextEncoder().encode("bonding-curve"), mintPk.toBuffer()],
+      PUMP_PROGRAM,
+    );
+    const info = await connection.getAccountInfo(curve);
+    if (!info?.data || info.data.length < 49) return null;
+    const b = info.data;
+    const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+    const u64 = (off) => Number(dv.getBigUint64(off, true));   // little-endian
+    const virtualTokenReserves = u64(8);
+    const virtualSolReserves   = u64(16);
+    const realTokenReserves    = u64(24);
+    const realSolReserves      = u64(32);
+    const tokenTotalSupply     = u64(40);
+    const complete             = b[48] === 1;
+    return {
+      curveAddress: curve.toBase58(),
+      virtualSolReserves: virtualSolReserves / 1e9,   // lamports -> SOL
+      realSolReserves:    realSolReserves / 1e9,      // the number that actually matters
+      virtualTokenReserves, realTokenReserves, tokenTotalSupply,
+      complete,                                        // true = graduated, sell on pump-amm
+    };
+  } catch (e) {
+    console.warn("[curve] read failed:", e?.message || e);
+    return null;
+  }
+}
+
+// Exact constant-product price impact, pre-computable before submitting.
+// For x*y = k, buying dy of the token costs dx = k/(y-dy) - x. Expressed as the %
+// premium over the current spot price. This replaces guessing at a slippage tolerance:
+// impact is a function of trade size RELATIVE TO RESERVES, so max position should be a
+// fraction of pool depth, not a fixed SOL amount.
+export function priceImpactPct(curve, solIn) {
+  if (!curve || !(solIn > 0)) return null;
+  const x = curve.virtualSolReserves;          // SOL side
+  const y = curve.virtualTokenReserves;        // token side
+  if (!(x > 0) || !(y > 0)) return null;
+  const k = x * y;
+  const tokensOut = y - k / (x + solIn);       // tokens received for solIn
+  if (!(tokensOut > 0)) return null;
+  const execPrice = solIn / tokensOut;         // average price paid
+  const spotPrice = x / y;                     // marginal price before the trade
+  return ((execPrice - spotPrice) / spotPrice) * 100;
+}
+
+// Largest trade (in SOL) whose price impact stays under maxPct — the honest answer to
+// "how big can I go on this token?"
+export function maxSizeForImpact(curve, maxPct) {
+  if (!curve || !(maxPct > 0)) return null;
+  let lo = 0, hi = Math.max(curve.virtualSolReserves, 1);
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    const imp = priceImpactPct(curve, mid);
+    if (imp == null) break;
+    if (imp > maxPct) hi = mid; else lo = mid;
+  }
+  return lo;
+}
+
 // Total UI token balance held for a mint (to derive the real fill price)
 export async function getTokenBalance(connection, pubkey, mint) {
   try {

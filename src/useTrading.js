@@ -8,7 +8,7 @@ import {
 } from "./tradingEngine.js";
 import { checkTokenSafety } from "./safety.js";
 import { pumpPortalTrade, getTokenBalance, getTxSolDelta, getTxTokenDelta, getSolBalance,
-         closeTokenAccount } from "./pumpPortal.js";
+         closeTokenAccount, getBondingCurveState, priceImpactPct, maxSizeForImpact } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
 import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
@@ -352,9 +352,23 @@ export function useTrading() {
       // Drag is measured against BOTH the sustained trigger AND the queued price, taking
       // the larger — so a run-up before OR after queueing is caught.
       let decisionPriceUsd = null;   // price we SAW when deciding — vs the price we FILL at
+      let curveState = null, curveImpact = null;   // real reserves + pre-computed impact
       {
         let actNow = null;
         try { actNow = await fetchTokenActivity(queueItem.tokenAddress); } catch { /* handled below */ }
+        // Read REAL reserves from the bonding curve. DexScreener reports no liquidity for
+        // fresh curve tokens (f_liqSol has been empty throughout), and any mcap/FDV field
+        // is virtual-reserve derived and cannot be trusted for sizing.
+        try {
+          curveState = await getBondingCurveState(connection, queueItem.tokenAddress);
+          if (curveState) {
+            curveImpact = priceImpactPct(curveState, queueItem.stakeSOL ?? settings.stakeSOL ?? 0.1);
+            console.warn(`[curve] ${queueItem.symbol} realSOL=${curveState.realSolReserves.toFixed(3)} `
+              + `virtSOL=${curveState.virtualSolReserves.toFixed(2)} complete=${curveState.complete} `
+              + `impact@stake=${curveImpact != null ? curveImpact.toFixed(2)+"%" : "?"} `
+              + `maxSize@5%=${(maxSizeForImpact(curveState, 5) || 0).toFixed(2)} SOL`);
+          }
+        } catch { /* non-fatal — curve read is instrumentation, not a gate */ }
         const livePrice = actNow?.priceUsd || null;
         decisionPriceUsd = livePrice;
         const pcH1now   = actNow?.priceChangeH1;
@@ -452,9 +466,19 @@ export function useTrading() {
         // slippage can't plausibly exceed the authorised slippage by much, so if the
         // derived price is far above what we decided at, distrust it and use the
         // decision price instead — and say so loudly rather than trading on bad data.
+        // TWO-SIDED guard. The original only caught entryPrice ABOVE the decision price.
+        // A derived price far BELOW it is equally wrong and more insidious: realised P&L
+        // is SOL-based so it looks fine, but peakPnlPct is computed off entryPrice and
+        // gets inflated. PVE recorded -72% entry slip and a fake +260% peak, which is
+        // exactly the number we use to judge entry quality. Reject both directions.
         const tol = (settings.pumpSlippage ?? 15) * 2 + 20;   // generous ceiling, in %
         const devPct = decisionPriceUsd ? ((derived - decisionPriceUsd) / decisionPriceUsd) * 100 : 0;
-        if (decisionPriceUsd && devPct > tol) {
+        if (decisionPriceUsd && devPct < -tol) {
+          console.warn(`[execcost] ${queueItem.symbol} derived entry price ${devPct.toFixed(0)}% `
+            + `BELOW decision price — implausible (would inflate peak). `
+            + `Using decision price as basis.`);
+          entryPrice = decisionPriceUsd;
+        } else if (decisionPriceUsd && devPct > tol) {
           console.warn(`[execcost] ${queueItem.symbol} derived entry price ${devPct.toFixed(0)}% `
             + `above decision price — implausible, likely a short token read `
             + `(tokens=${outAmount}). Using decision price as basis.`);
@@ -513,6 +537,12 @@ export function useTrading() {
       }
       logMilestone(queueItem.tokenAddress, queueItem.symbol, "bought", {
         entryPrice, price: entryPrice,
+        // real bonding-curve state — the trustworthy liquidity measure
+        curve_real_sol:   curveState ? +curveState.realSolReserves.toFixed(4) : "",
+        curve_virt_sol:   curveState ? +curveState.virtualSolReserves.toFixed(4) : "",
+        curve_complete:   curveState ? (curveState.complete ? 1 : 0) : "",
+        curve_impact_pct: curveImpact != null ? +curveImpact.toFixed(3) : "",
+        curve_max_size_5pct: curveState ? +(maxSizeForImpact(curveState, 5) || 0).toFixed(3) : "",
         decisionPrice: decisionPriceUsd ?? "",
         entry_slip_pct: entrySlipPct != null ? +entrySlipPct.toFixed(2) : "",
         sol_spent: +actualSolSpent.toFixed(6),
@@ -532,6 +562,21 @@ export function useTrading() {
 
     } catch (err) {
       const msg = err?.message || String(err);
+      // FAILED-BUY CAPTURE. Previously invisible: only successful buys reached the
+      // lifecycle log, so the trade record was survivorship-biased. This matters
+      // specifically because slippage is capped at 5% — the tokens most likely to blow
+      // through that cap are the FASTEST movers, i.e. the ones we most want. Without
+      // this we cannot tell a healthy filter from one whose best picks all fail to fill.
+      // (Slippage-exceeded is the single largest failure class on Solana overall:
+      // 51% of all failures, ~20% of all transactions — Alizadeh & Khabbazian 2025.)
+      const slipFail = /slippage|6003|6002|0x1771/i.test(msg);
+      logMilestone(queueItem.tokenAddress, queueItem.symbol, "buy_failed", {
+        price: decisionPriceUsd ?? queueItem.priceUsd ?? "",
+        buy_failed: 1,
+        buy_fail_reason: slipFail ? "slippage_exceeded" : msg.slice(0, 120),
+        buy_fail_slippage_pct: settings.pumpSlippage ?? 5,
+      });
+      console.warn(`[buyfail] ${queueItem.symbol} — ${slipFail ? "SLIPPAGE EXCEEDED" : "other"}: ${msg.slice(0,100)}`);
       notify(`Buy failed: ${msg}`, "error");
       console.error("[executeBuy]", err);
       fireNotification({
