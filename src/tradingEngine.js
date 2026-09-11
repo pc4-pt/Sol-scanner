@@ -465,6 +465,12 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // hit +20% at 47% vs 11-27% under 90s. But 90s + the narrow
                                   // pcH1 band only passed 0.8% of tokens (zero flow for 24h), so
                                   // 75s trades a little persistence edge for workable flow.
+  verifyTpOnChain:    true,       // before a profit exit, confirm the gain against the
+                                  // bonding curve's virtual reserves. The polled feed's
+                                  // upward prints are unreliable (peak vs exit-slip
+                                  // correlation -0.89); the curve cannot spike.
+  tpChainTolerancePct: 5,         // allow the chain to read this far below the target
+                                  // before blocking (feed/chain timing differ slightly)
   tpConfirmPolls:     2,          // require the TP target to hold for this many consecutive
                                   // polls (~2s each) before selling. Exit data showed profit
                                   // exits losing a median 11.5% to spike prints that vanished

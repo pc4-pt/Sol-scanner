@@ -189,7 +189,11 @@ function SettingsPanel({ settings, updateSettings }) {
           <NumField label="Stake per trade"       field="stakeSOL"        min={0.01} max={10}   step={0.01} suffix="SOL"/>
           <NumField label="Take profit"            field="takeProfitPct"   min={5}    max={500}  step={5}    suffix="%"/>
           <NumField label="Stop loss"              field="stopLossPct"     min={5}    max={50}   step={1}    suffix="%"/>
-          <NumField label="Slippage tolerance"     field="slippageBps"     min={50}   max={1000} step={50}   suffix="bps"/>
+          {/* slippageBps is a Jupiter-era leftover with ZERO reads in the trading path.
+              Exposing it as "Slippage tolerance" was actively misleading — changing it
+              did nothing while the real control is pumpSlippage below. Removed. */}
+          <NumField label="Curve slippage (buy)"    field="pumpSlippage"    min={1}    max={50}   step={1}    suffix="%"
+            description="The REAL buy slippage cap used by PumpPortal"/>
           <NumField label="Max open positions"     field="maxPositions"    min={1}    max={20}   step={1}/>
           <NumField label="Min score to queue"     field="minScore"        min={40}   max={95}   step={5}/>
           <NumField label="Min signal confidence"  field="minConfidence"   min={30}   max={95}   step={5}    suffix="%"/>
@@ -1093,7 +1097,8 @@ export function TradingPanel({ trading, solBalance }) {
                   : "OFF (fixed TP only)"],
                 ["Max positions",    settings.maxPositions],
                 ["Cooldown",         settings.cooldownMinutes+"min per token"],
-                ["Slippage",         (settings.slippageBps/100).toFixed(1)+"%"],
+                ["Buy slippage",     (settings.pumpSlippage ?? 5)+"%"],
+                ["Sell ladder",       (settings.sellSlippageLadder||[]).join("/")+"%"],
                 ["Auto-execute",     settings.autoExecute?"⚠ ENABLED":"OFF — manual approval"],
               ].map(([k,v])=>(
                 <div key={k} style={{display:"flex",justifyContent:"space-between",

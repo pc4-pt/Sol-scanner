@@ -54,7 +54,8 @@ function loadSettings() {
       // audited conflicts — must not inherit stale values into the test
       "adaptiveStopLoss", "sellSlippageLadder", "scaleByConfidence",
       "momentumReversalExit", "maxPositions", "stopLossPct", "earlyStopPct",
-      "autoBuySessionCapSOL", "reclaimAccountRent", "tpConfirmPolls"];
+      "autoBuySessionCapSOL", "reclaimAccountRent", "tpConfirmPolls",
+      "verifyTpOnChain", "tpChainTolerancePct"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -338,6 +339,7 @@ export function useTrading() {
 
     notify(`Getting quote for ${queueItem.symbol}…`, "info");
 
+    let decisionPriceUsd = null, curveState = null, curveImpact = null;
     try {
       // ── Native bonding-curve execution via PumpPortal (sole path) ─────────
       // The old Jupiter round-trip guard is gone: it checked Jupiter routability,
@@ -351,8 +353,11 @@ export function useTrading() {
       // price fetch failed, which is how MDUDAS (76% drag) slipped through and lost -88%.
       // Drag is measured against BOTH the sustained trigger AND the queued price, taking
       // the larger — so a run-up before OR after queueing is caught.
-      let decisionPriceUsd = null;   // price we SAW when deciding — vs the price we FILL at
-      let curveState = null, curveImpact = null;   // real reserves + pre-computed impact
+      // NOTE: declared where the CATCH can also see them. Previously these were inside
+      // the try, so the failed-buy handler threw a ReferenceError and silently wrote
+      // nothing — which is why the first batch captured zero failed buys.
+      decisionPriceUsd = null;
+      curveState = null; curveImpact = null;
       {
         let actNow = null;
         try { actNow = await fetchTokenActivity(queueItem.tokenAddress); } catch { /* handled below */ }
@@ -514,6 +519,13 @@ export function useTrading() {
         pnlPct:         0,
         pnlSol:         0,
         peakPnlPct:     0,                         // tracked over time for break-even SL
+        // ON-CHAIN reference price at entry, in SOL per token, from the bonding curve's
+        // virtual reserves. DexScreener's polled price produces spike prints that a
+        // take-profit then fires on: recorded peak correlates -0.89 with exit slip, and
+        // confirming the target over 2 polls did NOT help because the bad print persists.
+        // Comparing curve-to-curve is exact, needs no USD conversion, and cannot spike.
+        entryCurvePrice: (curveState && curveState.virtualTokenReserves > 0)
+          ? curveState.virtualSolReserves / curveState.virtualTokenReserves : null,
       };
 
       positionAddrsRef.current.add(queueItem.tokenAddress);
@@ -1066,6 +1078,32 @@ export function useTrading() {
           // is built. Requiring the target to hold for N consecutive polls filters those
           // one-tick spikes out. Applies ONLY to profit-taking — loss cuts still fire
           // immediately, because delaying a stop is the opposite of what we want.
+          // ── ON-CHAIN TAKE-PROFIT VERIFICATION ────────────────────────────────
+          // Before selling on a profit target, confirm the gain exists ON CHAIN. The
+          // polled feed prints spikes that never traded: TP exits filled a median -29.8%
+          // below their trigger while stops filled +11.1% ABOVE theirs — only upward
+          // readings are corrupted. One curve read per trigger (rare) settles it.
+          if (exit && exit.reason === "TAKE_PROFIT" && (settingsRef.current.verifyTpOnChain ?? true)
+              && pos.entryCurvePrice > 0) {
+            try {
+              const cs = await getBondingCurveState(connection, pos.tokenAddress);
+              if (cs && cs.virtualTokenReserves > 0) {
+                const nowCurve = cs.virtualSolReserves / cs.virtualTokenReserves;
+                const chainPct = ((nowCurve - pos.entryCurvePrice) / pos.entryCurvePrice) * 100;
+                const tgt = settingsRef.current.takeProfitPct ?? 15;
+                const tol = settingsRef.current.tpChainTolerancePct ?? 5;
+                if (chainPct < tgt - tol) {
+                  console.warn(`[tpverify] ${pos.symbol} BLOCKED — feed says +${(pnl?.pct ?? 0).toFixed(0)}% `
+                    + `but chain says ${chainPct >= 0 ? "+" : ""}${chainPct.toFixed(1)}%. Bad print, not selling.`);
+                  exit = null;
+                  tpConfirmRef.current.delete(pos.id);
+                } else {
+                  console.warn(`[tpverify] ${pos.symbol} OK — chain confirms ${chainPct >= 0 ? "+" : ""}${chainPct.toFixed(1)}%`);
+                }
+              }
+            } catch { /* curve unreadable — fall through to the existing poll confirmation */ }
+          }
+
           if (exit && exit.reason === "TAKE_PROFIT") {
             const need = settingsRef.current.tpConfirmPolls ?? 2;
             const seen = (tpConfirmRef.current.get(pos.id) || 0) + 1;
