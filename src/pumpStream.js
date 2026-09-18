@@ -9,7 +9,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
-import { fetchTokenActivity, computeTiming } from "./tradingEngine.js";
+import { fetchTokenActivity, computeTiming, isSolQuoted } from "./tradingEngine.js";
 import { logMilestone, recordPeak, recordFeatures } from "./lifecycleLog.js";
 import { recordGraduation, recordGradSnapshot, recordCreatorEvent,
          recordTrajectoryStart, recordTrajectorySnapshot } from "./discoveryLog.js";
@@ -263,8 +263,20 @@ export function useLaunchStream({
               // median pcH1 (165%) than winners (109%) — tokens already up huge on the hour
               // are late-stage exhausted pumps that rarely go green from entry. Skipping the
               // over-extended ones should cut the "never went green" losers.
+              // QUOTE-ASSET GATE (Custom Pairs, 2026-09-10). A non-SOL-quoted token
+              // makes every SOL-denominated threshold meaningless. Log it, never trade it.
+              const solQuoted = isSolQuoted(res);
+              if (!solQuoted && !x._nonSolLogged) {
+                x._nonSolLogged = true;
+                console.warn(`[quote] ${x.symbol} EXCLUDED — quoted in ${res.quoteSymbol || "non-SOL"}, `
+                  + `not SOL. SOL-denominated thresholds do not apply.`);
+                logMilestone(x.mint, x.symbol, "excluded_non_sol_quote", {
+                  price: res.priceUsd, quote_symbol: res.quoteSymbol || "",
+                  quote_address: res.quoteAddress || "",
+                });
+              }
               const pcH1 = res.priceChangeH1 ?? 0;
-              const passedFilter =
+              const passedFilter = solQuoted &&
                 (x.isMayhem ? 0 : 1) &&
                 (pcH1 >= c.minSustainPcH1) &&
                 (pcH1 <= (c.maxSustainPcH1 ?? 120)) &&
@@ -282,6 +294,8 @@ export function useLaunchStream({
                 f_hasSocials: res.hasSocials, f_hasWebsite: res.hasWebsite,
                 f_nPairs: res.nPairs, f_boosts: res.boosts,
                 f_passedFilter: passedFilter,
+                f_quote_symbol: res.quoteSymbol || "",
+                f_sol_quoted:   solQuoted ? 1 : 0,
               });
               // passive peak tracking — track ALL score-qualified sustained tokens
               // (control group included); the passedFilter flag lets us compare.

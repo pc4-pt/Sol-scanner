@@ -162,6 +162,8 @@ export function deriveRow(t) {
     f_ageMin:        t.data?.f_ageMin ?? "",
     f_vol5m:         t.data?.f_vol5m ?? "",
     f_volH1:         t.data?.f_volH1 ?? "",
+    f_quote_symbol:  t.data?.f_quote_symbol ?? "",
+    f_sol_quoted:    t.data?.f_sol_quoted ?? "",
     // liquidity WAS captured into features but never exported — needed to size trades
     // against the real pool rather than an FDV proxy
     f_liq:           t.data?.f_liq ?? "",
@@ -190,6 +192,7 @@ export function deriveRow(t) {
     // failed-buy capture (previously invisible — trade log was survivorship-biased)
     buy_failed:          t.data?.buy_failed ?? "",
     buy_fail_reason:     t.data?.buy_fail_reason ?? "",
+    buy_fail_stage:      t.data?.buy_fail_stage ?? "",
     decision_price:     t.data?.decisionPrice ?? "",
     sol_spent:          t.data?.sol_spent ?? "",
     sol_over_stake:     t.data?.sol_over_stake ?? "",

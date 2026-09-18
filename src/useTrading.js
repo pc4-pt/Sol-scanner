@@ -28,7 +28,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 15;
+const SETTINGS_VERSION = 16;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -55,7 +55,7 @@ function loadSettings() {
       "adaptiveStopLoss", "sellSlippageLadder", "scaleByConfidence",
       "momentumReversalExit", "maxPositions", "stopLossPct", "earlyStopPct",
       "autoBuySessionCapSOL", "reclaimAccountRent", "tpConfirmPolls",
-      "verifyTpOnChain", "tpChainTolerancePct"];
+      "verifyTpOnChain", "tpChainTolerancePct", "autoBuyMaxRetries"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -316,15 +316,23 @@ export function useTrading() {
   // ── Execute buy ───────────────────────────────────────────────────────────
   const executeBuy = useCallback(async (queueItem) => {
     if (!effConnected || !effPublicKey || !effSignTransaction) {
+      // This returns BEFORE the try block, so it never reached the buy_failed logging —
+      // which is why the failed-buy capture read zero despite real wallet failures.
+      // The item deliberately stays queued: it is retryable once the wallet is back.
+      logMilestone(queueItem.tokenAddress, queueItem.symbol, "buy_failed", {
+        price: queueItem.priceUsd ?? "",
+        buy_failed: 1, buy_fail_reason: "wallet_not_connected", buy_fail_stage: "pre_signer",
+      });
+      console.warn(`[buyfail] ${queueItem.symbol} — wallet not connected (stays queued)`);
       notify("Wallet not connected — please connect Phantom or Solflare", "error");
-      return;
+      return false;
     }
 
     // Synchronous double-fire guard — state setters are async and won't block
     // a second invocation within the same tick.
     if (buyFiringRef.current.has(queueItem.id)) {
       console.warn("[executeBuy] already firing for", queueItem.id);
-      return;
+      return false;
     }
     buyFiringRef.current.add(queueItem.id);
 
@@ -332,7 +340,7 @@ export function useTrading() {
     if (openCount >= settings.maxPositions) {
       notify(`Max positions (${settings.maxPositions}) reached`, "warn");
       buyFiringRef.current.delete(queueItem.id);
-      return;
+      return false;   // nothing spent
     }
 
     setExecuting(prev => ({ ...prev, [queueItem.id]: true }));
@@ -387,7 +395,7 @@ export function useTrading() {
           setQueue(prev => prev.filter(q => q.id !== queueItem.id));
           setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
           buyFiringRef.current.delete(queueItem.id);
-          return;
+          return false;   // nothing spent
         }
 
         // headroom / drag gate — measures the run-up between QUEUE and EXECUTION (the real
@@ -406,7 +414,7 @@ export function useTrading() {
             setQueue(prev => prev.filter(q => q.id !== queueItem.id));
             setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
             buyFiringRef.current.delete(queueItem.id);
-            return;
+            return false;   // nothing spent
           }
           const drag = queuedPrice > 0 ? ((livePrice - queuedPrice) / queuedPrice) * 100 : 0;
           if (drag > maxDrag) {
@@ -416,7 +424,7 @@ export function useTrading() {
             setQueue(prev => prev.filter(q => q.id !== queueItem.id));
             setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
             buyFiringRef.current.delete(queueItem.id);
-            return;
+            return false;   // nothing spent
           }
         }
       }
@@ -434,10 +442,22 @@ export function useTrading() {
         connection,
       });
       if (!confirmed) {
-        notify(`✕ ${queueItem.symbol} buy not confirmed (${err || "timeout"}) — check wallet before retrying`, "warn");
+        // Unconfirmed / timed out. Nothing was spent and the item deliberately stays
+        // queued so it can be retried. This path previously returned undefined, which
+        // the auto-buy driver read as success — charging the session budget for a trade
+        // that never happened, and marking it permanently attempted so it never retried.
+        const slipFail = /slippage|6003|6002|0x1771/i.test(String(err || ""));
+        logMilestone(queueItem.tokenAddress, queueItem.symbol, "buy_failed", {
+          price: decisionPriceUsd ?? queueItem.priceUsd ?? "",
+          buy_failed: 1, buy_fail_stage: "unconfirmed",
+          buy_fail_reason: slipFail ? "slippage_exceeded" : String(err || "timeout").slice(0, 120),
+          buy_fail_slippage_pct: settings.pumpSlippage ?? 5,
+        });
+        console.warn(`[buyfail] ${queueItem.symbol} unconfirmed — ${slipFail ? "SLIPPAGE EXCEEDED" : (err || "timeout")}`);
+        notify(`✕ ${queueItem.symbol} buy not confirmed (${err || "timeout"}) — will retry`, "warn");
         setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
         buyFiringRef.current.delete(queueItem.id);
-        return;
+        return false;
       }
 
       // Measure the ACTUAL fill from the confirmed tx (captures curve slippage + fees)
@@ -612,6 +632,7 @@ export function useTrading() {
   const autoBuySpentRef     = useRef(0);           // SOL spent by auto-buy this session
   const autoBuyHaltedRef    = useRef(false);       // kill-switch latch
   const autoBuyBusyRef      = useRef(false);       // one auto-buy at a time
+  const autoBuyFailCountRef = useRef(new Map());   // queueId -> consecutive failed attempts
   useEffect(() => {
     if (!(settings.autoExecute ?? false)) return;
     if (!effConnected || !effPublicKey || !effSignTransaction) return;
@@ -673,12 +694,32 @@ export function useTrading() {
         }
 
         // All rails passed — fire the real buy (executeBuy still runs the entry gates).
+        // Mark attempted BEFORE firing so we can't double-fire, but do NOT consume the
+        // session budget yet — a failed buy spends nothing, and counting it would burn
+        // the cap on trades that never happened. Budget is charged on success below.
         autoBuyAttemptedRef.current.add(candidate.id);
-        autoBuySpentRef.current += stake;
         notify(`🤖 Auto-buying ${candidate.symbol} (${stake} SOL) — `
           + `${openCount + 1}/${s.maxConcurrentPositions ?? 3} slots, `
           + `${autoBuySpentRef.current.toFixed(3)}/${s.autoBuySessionCapSOL ?? 0.5} SOL session`, "info");
-        await executeBuy(candidate);
+        const ok = await executeBuy(candidate);
+        if (ok === false) {
+          // Buy did not execute (wallet down, timeout, gate). Nothing was spent, so
+          // release the attempt latch and let it retry on a later tick — up to a few
+          // times, so a persistent failure can't loop forever.
+          const tries = (autoBuyFailCountRef.current.get(candidate.id) || 0) + 1;
+          autoBuyFailCountRef.current.set(candidate.id, tries);
+          // Only retry if the item is STILL queued. Deliberate gate skips (pcH1 ceiling,
+          // drag, no-price) remove it from the queue — those must never be retried.
+          const stillQueued = queue.some(q => q.id === candidate.id);
+          if (stillQueued && tries < (s.autoBuyMaxRetries ?? 3)) {
+            autoBuyAttemptedRef.current.delete(candidate.id);
+            console.warn(`[autoBuy] ${candidate.symbol} failed (${tries}/${s.autoBuyMaxRetries ?? 3}) — will retry`);
+          } else {
+            console.warn(`[autoBuy] ${candidate.symbol} failed ${tries}x — giving up, leaving queued`);
+          }
+        } else {
+          autoBuySpentRef.current += stake;   // charge the budget only on a real fill
+        }
       } catch (e) {
         console.warn("[autoBuy] driver error", e);
       } finally {

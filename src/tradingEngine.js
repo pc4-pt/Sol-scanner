@@ -293,6 +293,15 @@ export async function getSolUsd() {
 // ── Live activity / momentum for a token (DexScreener) ────────────────────────
 // Returns 5-minute trade count, price change, volume, liquidity, and the pair
 // address (for inline charts). null until the token is listed with a pool.
+// Wrapped SOL is the only quote our SOL-denominated thresholds are valid against.
+export const SOL_QUOTE_MINT = "So11111111111111111111111111111111111111112";
+export function isSolQuoted(act) {
+  if (!act) return true;                       // unknown -> don't block on missing data
+  if (act.quoteAddress) return act.quoteAddress === SOL_QUOTE_MINT;
+  if (act.quoteSymbol)  return /^(SOL|WSOL)$/i.test(act.quoteSymbol);
+  return true;                                 // feed didn't say; treat as SOL
+}
+
 export async function fetchTokenActivity(mint) {
   try {
     const res = await fetch(`https://api.dexscreener.com/tokens/v1/solana/${mint}`);
@@ -312,6 +321,14 @@ export async function fetchTokenActivity(mint) {
     const websites = p.info?.websites || [];
     return {
       pairAddress:   p.pairAddress || null,
+      // QUOTE ASSET. Pump.fun launched Custom Pairs (2026-09-10): new tokens can be
+      // quoted against tokenised stocks, wrapped majors, metals and index ETFs rather
+      // than SOL. Every threshold here is SOL-denominated — the 30 SOL bootstrap, the
+      // ~85 SOL graduation reserve, f_liqSol, sizing and PumpPortal execution — so a
+      // non-SOL-quoted token computes nonsense against them. Surface it so ingestion
+      // can exclude it.
+      quoteSymbol:   p.quoteToken?.symbol || null,
+      quoteAddress:  p.quoteToken?.address || null,
       priceUsd:      parseFloat(p.priceUsd || 0) || 0,
       priceChange5m: parseFloat(p.priceChange?.m5 ?? 0) || 0,
       priceChangeH1: parseFloat(p.priceChange?.h1 ?? 0) || 0,
@@ -548,6 +565,9 @@ export const DEFAULT_TRADE_SETTINGS = {
   reclaimAccountRent: true,       // close the emptied token account after each sell to recover
                                   // its ~0.00204 SOL rent deposit (~87% of the per-trade fee).
                                   // Fires after the sell settles; never blocks the trade.
+  autoBuyMaxRetries:  3,          // a failed buy spends nothing, so retry it a few times
+                                  // rather than burning the candidate. Gate skips (which
+                                  // remove the item from the queue) are never retried.
   autoBuySessionCapSOL: 2.0,      // 0.5 -> 2.0. At the old 0.01 stake this was 50 trades; at
                                   // 0.1 it was only 5, so the session halted every day or two
                                   // and looked like a fault. Sized for ~20 trades at 0.1 SOL.      // stop auto-buying after this much SOL spent this session
