@@ -10,6 +10,7 @@ import { checkTokenSafety } from "./safety.js";
 import { pumpPortalTrade, getTokenBalance, getTxSolDelta, getTxTokenDelta, getSolBalance,
          closeTokenAccount, getBondingCurveState, priceImpactPct, maxSizeForImpact } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
+import { flagExtendedTracking } from "./pumpStream.js";
 import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
 
@@ -28,7 +29,7 @@ function load(key, fallback) {
 // (e.g. an old uncapped sell ladder). Merge defaults under the stored values so new
 // fields appear, then a version gate re-applies the current defaults for the
 // exit/entry-stack fields that must not be overridden by stale storage.
-const SETTINGS_VERSION = 16;
+const SETTINGS_VERSION = 18;
 function loadSettings() {
   const stored = load(KEYS.settings, null);
   if (!stored) return { ...DEFAULT_TRADE_SETTINGS, _v: SETTINGS_VERSION };
@@ -55,7 +56,8 @@ function loadSettings() {
       "adaptiveStopLoss", "sellSlippageLadder", "scaleByConfidence",
       "momentumReversalExit", "maxPositions", "stopLossPct", "earlyStopPct",
       "autoBuySessionCapSOL", "reclaimAccountRent", "tpConfirmPolls",
-      "verifyTpOnChain", "tpChainTolerancePct", "autoBuyMaxRetries"];
+      "verifyTpOnChain", "tpChainTolerancePct", "autoBuyMaxRetries",
+      "minDevSol", "maxPriorCount", "curvePollEveryNTicks"];
     for (const k of forced) s[k] = DEFAULT_TRADE_SETTINGS[k];
     s._v = SETTINGS_VERSION;
   }
@@ -140,6 +142,10 @@ export function useTrading() {
   const positionsRef      = useRef(positions);
   const autoSellFiringRef = useRef(new Set());
   const tpConfirmRef      = useRef(new Map());   // positionId -> consecutive polls at TP target
+  // Curve-derived paper benchmark state (never gates a trade — measurement only)
+  const curveTickRef      = useRef(new Map());   // positionId -> monitor tick count
+  const curvePeakRef      = useRef(new Map());   // positionId -> peak % from curve prices
+  const curveLastRef      = useRef(new Map());   // positionId -> last curve reading
   const partialFiringRef  = useRef(new Set());
   // Synchronous guards against double-fire (state setters are async)
   const buyFiringRef      = useRef(new Set());
@@ -294,6 +300,9 @@ export function useTrading() {
     sellFailCountRef.current.delete(positionId);
     autoSellFiringRef.current.delete(positionId);
     tpConfirmRef.current.delete(positionId);
+    curveTickRef.current.delete(positionId);
+    curvePeakRef.current.delete(positionId);
+    curveLastRef.current.delete(positionId);
     positionAddrsRef.current.delete(pos.tokenAddress);
 
     const closed = {
@@ -801,6 +810,19 @@ export function useTrading() {
     // is a latency/slippage problem, not something a threshold change can fix.
     const triggerAt    = Date.now();
     const triggerPrice = position.currentPrice || null;
+    // Curve price AT THE TRIGGER — the clean counterpart to triggerPrice. Comparing
+    // curve-entry to curve-exit gives a paper return with no feed contamination, which
+    // is what separates "the signal was wrong" from "the execution was wrong".
+    let triggerCurvePrice = null, triggerCurvePct = null;
+    if (position.entryCurvePrice > 0) {
+      try {
+        const cs = await getBondingCurveState(connection, position.tokenAddress);
+        if (cs && cs.virtualTokenReserves > 0) {
+          triggerCurvePrice = cs.virtualSolReserves / cs.virtualTokenReserves;
+          triggerCurvePct = ((triggerCurvePrice - position.entryCurvePrice) / position.entryCurvePrice) * 100;
+        }
+      } catch { /* measurement only */ }
+    }
 
     setExecuting(prev => ({ ...prev, [position.id]: true }));
     notify(`Selling ${position.symbol} (${reason})…`, "info");
@@ -891,6 +913,12 @@ export function useTrading() {
       sellFailCountRef.current.delete(position.id);  // success — reset fail counter
       setPositions(prev => prev.filter(p => p.id !== position.id));
       setHistory(prev => [closed, ...prev].slice(0, 100));
+      // Free-carry measurability: extend passive tracking to 24h for tokens we took
+      // profit on. Only these can carry a zero-cost residual, so this is exactly the
+      // subset the ladder test needs — without extending the whole ready set.
+      if (reason === "TAKE_PROFIT") {
+        try { flagExtendedTracking(position.tokenAddress); } catch {}
+      }
       logMilestone(position.tokenAddress, position.symbol, "sold", {
         exitPrice: position.currentPrice, price: position.currentPrice,
         pnlPct: parseFloat(pnlPct.toFixed(2)),
@@ -905,6 +933,18 @@ export function useTrading() {
         exit_slip_pct:    exitSlipPct != null ? +exitSlipPct.toFixed(2) : "",
         exit_latency_ms:  exitLatencyMs,
         expected_proceeds: expectedProceeds != null ? +expectedProceeds.toFixed(6) : "",
+        // ── CURVE-DERIVED PAPER BENCHMARK (feed-independent) ────────────────
+        // curve_paper_pct is the return the SIGNAL earned, measured entry-curve to
+        // exit-curve. Realised pnlPct is SOL in/out. The gap between them is the true
+        // execution cost — which the decision-price benchmark could not measure.
+        curve_entry_price: position.entryCurvePrice ?? "",
+        curve_trigger_price: triggerCurvePrice ?? "",
+        curve_paper_pct:  triggerCurvePct != null ? +triggerCurvePct.toFixed(2) : "",
+        curve_peak_pct:   (() => { const v = curvePeakRef.current.get(position.id);
+                                   return v == null ? "" : +v.toFixed(2); })(),
+        // realised minus paper: negative = execution cost, positive = we beat the signal
+        curve_exec_gap_pct: (triggerCurvePct != null && position.solSpent > 0)
+          ? +(((solReceived - position.solSpent) / position.solSpent * 100) - triggerCurvePct).toFixed(2) : "",
       });
 
       notify(
@@ -1022,6 +1062,32 @@ export function useTrading() {
           const price = act?.priceUsd || await fetchCurrentPrice(pos.tokenAddress);
           if (!price) continue;
           const pnl  = calcPnl(pos, price);
+
+          // ── CURVE-DERIVED PAPER BENCHMARK ───────────────────────────────────
+          // decision_price and trigger_price both come from the polled feed, which
+          // prints spikes that never traded — so a decision-price P&L is NOT a valid
+          // paper benchmark (it produced a +15.5% "favourable" exit slip against a
+          // modelled 0.128% impact, ~120x in the wrong direction). Track the same
+          // quantities from the bonding curve instead: exact, reserve-derived, and
+          // incapable of spiking. Polled every other tick to bound RPC load.
+          let curvePct = null;
+          if (pos.entryCurvePrice > 0) {
+            const tick = (curveTickRef.current.get(pos.id) || 0) + 1;
+            curveTickRef.current.set(pos.id, tick);
+            if (tick % (settingsRef.current.curvePollEveryNTicks ?? 2) === 0) {
+              try {
+                const cs = await getBondingCurveState(connection, pos.tokenAddress);
+                if (cs && cs.virtualTokenReserves > 0) {
+                  const cp = cs.virtualSolReserves / cs.virtualTokenReserves;
+                  curvePct = ((cp - pos.entryCurvePrice) / pos.entryCurvePrice) * 100;
+                  curvePeakRef.current.set(pos.id,
+                    Math.max(curvePeakRef.current.get(pos.id) ?? -1e9, curvePct));
+                  curveLastRef.current.set(pos.id, { pct: curvePct, price: cp, at: Date.now() });
+                }
+              } catch { /* benchmark only — never gates a trade */ }
+            }
+          }
+
           // Update peakPnlPct — used by break-even SL logic
           const newPeak = Math.max(pos.peakPnlPct || 0, pnl?.pct ?? 0);
           // Build the version of the position used for exit decisions, including fresh peak

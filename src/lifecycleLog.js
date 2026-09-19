@@ -149,7 +149,11 @@ export function deriveRow(t) {
     })(),
     // ready-point metrics: what the persistence gate actually costs and leaves
     drag_at_ready:     t.data?.dragAtReady ?? "",      // run-up from sustained → gate open
-    upside_from_ready: t.data?.upsideFromReady ?? "",  // capturable upside from gate open
+    upside_from_ready: t.data?.upsideFromReady ?? "",
+    extended_tracked: t.data?.extendedTracked ?? "",
+    ladder_x2_s:      t.data?.ladder_x2_s ?? "",
+    ladder_x5_s:      t.data?.ladder_x5_s ?? "",
+    ladder_x10_s:     t.data?.ladder_x10_s ?? "",  // capturable upside from gate open
     tracked_s:       t.data?.trackedS ?? "",
     // ── feature snapshot at the sustained moment (for runner-vs-dud analysis) ──
     f_devSol:        t.data?.f_devSol ?? "",
@@ -166,13 +170,10 @@ export function deriveRow(t) {
     f_sol_quoted:    t.data?.f_sol_quoted ?? "",
     // liquidity WAS captured into features but never exported — needed to size trades
     // against the real pool rather than an FDV proxy
-    f_liq:           t.data?.f_liq ?? "",
-    f_liqSol:        t.data?.f_liqSol ?? "",
     f_volLiq:        t.data?.f_volLiq ?? "",
     f_buyRatio5m:    t.data?.f_buyRatio5m ?? "",
     f_buyRatioH1:    t.data?.f_buyRatioH1 ?? "",
     f_pcH1:          t.data?.f_pcH1 ?? "",
-    f_volLiq:        t.data?.f_volLiq ?? "",
     f_hasSocials:    t.data?.f_hasSocials ?? "",
     f_hasWebsite:    t.data?.f_hasWebsite ?? "",
     f_nPairs:        t.data?.f_nPairs ?? "",
@@ -210,6 +211,12 @@ export function deriveRow(t) {
     exit_slip_pct:     t.data?.exit_slip_pct ?? "",
     exit_latency_ms:   t.data?.exit_latency_ms ?? "",
     expected_proceeds: t.data?.expected_proceeds ?? "",
+    // curve-derived paper benchmark (feed-independent)
+    curve_entry_price:   t.data?.curve_entry_price ?? "",
+    curve_trigger_price: t.data?.curve_trigger_price ?? "",
+    curve_paper_pct:     t.data?.curve_paper_pct ?? "",
+    curve_peak_pct:      t.data?.curve_peak_pct ?? "",
+    curve_exec_gap_pct:  t.data?.curve_exec_gap_pct ?? "",
     // absolute prices at each milestone
     price_eligible:  p.eligible  ?? "", price_sustained: p.sustained ?? "",
     price_queued:    p.queued    ?? "", price_bought:    p.bought    ?? "",

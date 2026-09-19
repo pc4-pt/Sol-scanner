@@ -90,7 +90,7 @@ export function LaunchFeed({ trading }) {
     const minAgeMs = (s.minSustainedAgeSec ?? 75) * 1000;
     const now = Date.now();
     // Funnel counters — so "nothing queued" can be diagnosed as quiet-vs-blocked at a glance.
-    const cut = { seen:0, notEligible:0, notSustained:0, tooYoung:0, filter:0, score:0, dev:0, mill:0, queued:0 };
+    const cut = { seen:0, notEligible:0, notSustained:0, tooYoung:0, filter:0, score:0, dev:0, serial:0, mill:0, queued:0 };
     for (const l of launches) {
       if (seen.current.has(l.mint)) { cut.seen++; continue; }
       if (l.eligibility?.state !== "eligible") { cut.notEligible++; continue; }   // survival gate
@@ -102,6 +102,11 @@ export function LaunchFeed({ trading }) {
       if (l.eligibility?.passedFilter !== 1) { cut.filter++; continue; }           // non-mayhem + pcH1 + volH1
       if (l.score < minExec) { cut.score++; continue; }
       if ((l.devSol ?? 0) < minDev) { cut.dev++; continue; }
+      // Serial-launcher gate. Own captures (n=1,266): f_priorCount rho -0.206 —
+      // creators with more prior launches do WORSE. Off by default (0) so it can be
+      // enabled as a single clean variable rather than alongside the devSol change.
+      const maxPrior = s.maxPriorCount ?? 0;
+      if (maxPrior > 0 && (l.priorCount ?? 0) > maxPrior) { cut.serial = (cut.serial||0)+1; continue; }
       if (s.blockTokenMills && l.priorCount >= millN && (l.priorGrads ?? 0) === 0) { cut.mill++; continue; }
       seen.current.add(l.mint);
       cut.queued++;
@@ -113,7 +118,7 @@ export function LaunchFeed({ trading }) {
       console.warn(`[funnel] tracking ${launches.length} | already-seen ${cut.seen} | `
         + `not-eligible ${cut.notEligible} | not-sustained ${cut.notSustained} | `
         + `held<${(minAgeMs/1000)}s ${cut.tooYoung} | failed-filter(vol/pcH1) ${cut.filter} | `
-        + `score<${minExec} ${cut.score} | dev<${minDev} ${cut.dev} | mill ${cut.mill} `
+        + `score<${minExec} ${cut.score} | dev<${minDev} ${cut.dev} | serial ${cut.serial||0} | mill ${cut.mill} `
         + `>>> QUEUED ${cut.queued}`);
     }
   }, [launches, s.launchAutoQueue, s.minExecScore, s.minDevSol, s.blockTokenMills, s.millMinLaunches, trading]);

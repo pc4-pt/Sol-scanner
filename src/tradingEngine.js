@@ -482,6 +482,9 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // hit +20% at 47% vs 11-27% under 90s. But 90s + the narrow
                                   // pcH1 band only passed 0.8% of tokens (zero flow for 24h), so
                                   // 75s trades a little persistence edge for workable flow.
+  curvePollEveryNTicks: 2,        // read the bonding curve every Nth monitor tick for the
+                                  // paper benchmark. At PRICE_POLL_MS=2000 and N=2 that is
+                                  // one RPC per position per 4s — bounded by maxPositions.
   verifyTpOnChain:    true,       // before a profit exit, confirm the gain against the
                                   // bonding curve's virtual reserves. The polled feed's
                                   // upward prints are unreliable (peak vs exit-slip
@@ -522,7 +525,17 @@ export const DEFAULT_TRADE_SETTINGS = {
   launchAutoQueue:    false,      // false = alert/watchlist only; you click to queue (paper-first)
   // ── Launch entry-quality gates (auto-queue path) — improve confidence, avoid dying tokens ──
   minExecScore:       68,         // auto-queue only launches scoring >= this (higher bar than display)
-  minDevSol:          1.0,        // require the dev's own initial buy >= this many SOL (tiny buys die)
+  minDevSol:          5.0,        // raised 1.0 -> 5.0. Own captures (n=1,266): f_devSol
+                                  // quartiles are NON-monotone — only Q4 (>=5 SOL)
+                                  // separates, 26.2% reaching +15% vs 13.0% for Q1. Use as
+                                  // a THRESHOLD near the Q4 boundary, not a scaled score.
+                                  // Matches the Cox HR 4.51 above-platform-default result.
+  maxPriorCount:      0,          // 0 = off. Own captures: f_priorCount rho -0.206 —
+                                  // SERIAL LAUNCHERS DO WORSE. Set >0 to reject creators
+                                  // with more than this many prior launches. Note
+                                  // f_priorGrads rho -0.087: prior graduations do NOT
+                                  // predict better outcomes, so gradRate is not a positive
+                                  // signal and is deliberately not gated on.        // require the dev's own initial buy >= this many SOL (tiny buys die)
   blockTokenMills:    true,       // skip creators who've launched a lot and never graduated (spam factories)
   millMinLaunches:    5,          // "a lot" = this many prior launches with zero graduations
   // ── Honeypot / dead-liquidity guard (all buys) — KEPT ────────────────────

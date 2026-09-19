@@ -94,6 +94,20 @@ export function recordCreatorEvent(creator, kind) {
 }
 
 export function getGraduations() { return Object.values(loadGrad()); }
+
+// Graduations that still need post-grad samples. The in-memory tracking queue is lost
+// on every reload, so any graduation recorded before a refresh was never sampled again —
+// which is why only 7.7% of rows had a post-grad path. Rebuilt from the persisted store
+// on mount so tracking survives restarts.
+export function getPendingGradTracking(maxAgeMs = 3_900_000) {
+  const now = Date.now();
+  return getGraduations().filter(g => {
+    if (!g.gradAt || now - g.gradAt > maxAgeMs) return false;
+    const done = Object.keys(g.path || {}).length;
+    return done < 5;                       // 5 offsets: t+1/5/15/30/60m
+  }).map(g => ({ mint: g.mint, symbol: g.symbol, creator: g.creator || "",
+                 gradAt: g.gradAt, done: { ...(g.path || {}) } }));
+}
 export function getCreators() { return Object.values(loadCreators()); }
 
 // ── TRAJECTORY: multi-point snapshots after the ready/sustained point ────────

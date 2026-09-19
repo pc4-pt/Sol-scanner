@@ -12,7 +12,8 @@ import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
 import { fetchTokenActivity, computeTiming, isSolQuoted } from "./tradingEngine.js";
 import { logMilestone, recordPeak, recordFeatures } from "./lifecycleLog.js";
 import { recordGraduation, recordGradSnapshot, recordCreatorEvent,
-         recordTrajectoryStart, recordTrajectorySnapshot } from "./discoveryLog.js";
+         recordTrajectoryStart, recordTrajectorySnapshot,
+         getPendingGradTracking } from "./discoveryLog.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -164,10 +165,25 @@ export function useLaunchStream({
               recordGraduation(x.mint, x.symbol, {
                 creator: x.creator || "",
                 venue: (mg.pool || mg.venue || "").toString(),
-                launchToGradSec: x.ts ? Math.round((Date.now() - x.ts) / 1000) : "",
+                // launchToGradSec: x.ts is the FIRST-SEEN time on this stream, which is
+                // absent for anything we only met at migration. Fall back to the peak
+                // tracker's startedAt, then to the sustained time, before giving up —
+                // 641/898 rows previously exported empty.
+                launchToGradSec: (() => {
+                  const tr = trackRef.current?.get(x.mint);
+                  const base = x.ts || tr?.startedAt || tr?.sustainedTime || null;
+                  return base ? Math.round((Date.now() - base) / 1000) : "";
+                })(),
                 priceAtGrad: x.eligibility?.priceUsd ?? "",
                 mcapAtGrad: x.eligibility?.marketCap ?? "",
-                peakBeforeGrad: x.peakPct ?? "",
+                // peakBeforeGrad: x.peakPct NEVER existed on the launch object — peak is
+                // held in the tracker and only written out at finalisation, so this
+                // column was null on every row. Read it from the tracker instead.
+                peakBeforeGrad: (() => {
+                  const tr = trackRef.current?.get(x.mint);
+                  if (!tr || !(tr.sustainedPrice > 0) || !(tr.peakPrice > 0)) return "";
+                  return +(((tr.peakPrice - tr.sustainedPrice) / tr.sustainedPrice) * 100).toFixed(1);
+                })(),
                 f_devSol: x.f_devSol ?? x.devSol ?? "",
                 f_priorGrads: x.f_priorGrads ?? x.priorGrads ?? "",
                 f_priorCount: x.f_priorCount ?? x.priorCount ?? "",
@@ -377,7 +393,28 @@ function useTrajectoryTracker(trajTrackRef, enabled) {
   }, [enabled, trajTrackRef]);
 }
 
+// Mints flagged for extended (24h) tracking because we took profit on them. The trading
+// path writes here; the peak tracker reads it. Module-level so useTrading can call it
+// without threading a ref through the component tree.
+const extendedTrackMints = new Set();
+export function flagExtendedTracking(mint) {
+  if (mint) extendedTrackMints.add(mint);
+}
+
 function useGradTracker(gradTrackRef, enabled) {
+  // Rehydrate the queue from persisted graduations on mount. Without this, every page
+  // reload orphaned in-flight graduations and their post-grad path was never filled.
+  useEffect(() => {
+    if (!enabled) return;
+    try {
+      let restored = 0;
+      for (const g of getPendingGradTracking()) {
+        if (!gradTrackRef.current.has(g.mint)) { gradTrackRef.current.set(g.mint, g); restored++; }
+      }
+      if (restored) console.warn(`[gradtrack] resumed ${restored} graduations pending post-grad samples`);
+    } catch { /* non-fatal */ }
+  }, [enabled, gradTrackRef]);
+
   useEffect(() => {
     if (!enabled) return;
     const OFFSETS = [
@@ -440,6 +477,11 @@ function usePeakTracker(trackRef, enabled, minReadySec = 75) {
   useEffect(() => {
     if (!enabled) return;
     const MAX_TRACK_S = 900;        // follow each token up to 15 min after sustained
+    // EXTENDED horizon, applied ONLY to tokens we actually took profit on. Free-carry
+    // needs a 2x/5x/10x ladder against a 24h stop, which 15 min cannot evaluate — but
+    // extending every ready token to 24h would multiply the capture for no benefit.
+    // Residuals only exist on trades that hit TP, so extend exactly that subset.
+    const EXTENDED_TRACK_S = 86400;
     const COLLAPSE_FRAC = 0.3;      // finalize early if price falls below 30% of sustained
     const iv = setInterval(async () => {
       const map = trackRef.current;
@@ -464,8 +506,25 @@ function usePeakTracker(trackRef, enabled, minReadySec = 75) {
         }
         if (price && t.readyPrice && price > (t.peakAfterReady || 0)) t.peakAfterReady = price;
 
-        const agedOut = now - t.startedAt > MAX_TRACK_S * 1000;
-        const collapsed = price && price < t.sustainedPrice * COLLAPSE_FRAC;
+        if (!t.extendTracking && extendedTrackMints.has(mint)) {
+          t.extendTracking = true; t.ladder = t.ladder || {};
+          console.warn(`[freecarry] ${t.symbol} extended to 24h tracking (took profit)`);
+        }
+        // Record when a residual would have hit each ladder rung, measured from the
+        // ready price. No trailing stop by design: the slow graduates showed zero MFE
+        // for an hour before moving, so any trailing rule would exit during the dead period.
+        if (t.extendTracking && price && t.readyPrice > 0) {
+          const mult = price / t.readyPrice;
+          for (const rung of [2, 5, 10]) {
+            if (mult >= rung && !t.ladder[`x${rung}`]) {
+              t.ladder[`x${rung}`] = Math.round((now - (t.readyTime || t.startedAt)) / 1000);
+              console.warn(`[freecarry] ${t.symbol} hit ${rung}x at +${t.ladder[`x${rung}`]}s`);
+            }
+          }
+        }
+        const horizon = t.extendTracking ? EXTENDED_TRACK_S : MAX_TRACK_S;
+        const agedOut = now - t.startedAt > horizon * 1000;
+        const collapsed = !t.extendTracking && price && price < t.sustainedPrice * COLLAPSE_FRAC;
         if (agedOut || collapsed) {
           const peakPct = t.sustainedPrice > 0 ? ((t.peakPrice - t.sustainedPrice) / t.sustainedPrice) * 100 : 0;
           const ddAfterPeak = t.peakPrice > 0 ? ((t.lastPrice - t.peakPrice) / t.peakPrice) * 100 : 0;
@@ -480,6 +539,9 @@ function usePeakTracker(trackRef, enabled, minReadySec = 75) {
             drawdownAfterPeak: +ddAfterPeak.toFixed(1),
             dragAtReady: dragAtReady == null ? null : +dragAtReady.toFixed(1),
             upsideFromReady: upsideFromReady == null ? null : +upsideFromReady.toFixed(1),
+            extendedTracked: t.extendTracking ? 1 : 0,
+            ladder_x2_s: t.ladder?.x2 ?? "", ladder_x5_s: t.ladder?.x5 ?? "",
+            ladder_x10_s: t.ladder?.x10 ?? "",
           });
           map.delete(mint);
         }
