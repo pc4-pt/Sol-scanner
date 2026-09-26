@@ -382,7 +382,7 @@ function useTrajectoryTracker(trajTrackRef, enabled) {
             const bp = act.trades5m > 0 ? +(act.buys5m / act.trades5m).toFixed(3) : "";
             for (const o of due) {
               recordTrajectorySnapshot(mint, o.label,
-                { price: act.priceUsd, vol: act.volH1, bp });
+                { price: act.priceUsd, vol: act.volH1, bp, trades5m: act.trades5m ?? "" });
               t.done[o.label] = true;
             }
           }

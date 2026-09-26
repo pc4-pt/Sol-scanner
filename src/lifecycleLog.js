@@ -150,10 +150,7 @@ export function deriveRow(t) {
     // ready-point metrics: what the persistence gate actually costs and leaves
     drag_at_ready:     t.data?.dragAtReady ?? "",      // run-up from sustained → gate open
     upside_from_ready: t.data?.upsideFromReady ?? "",
-    extended_tracked: t.data?.extendedTracked ?? "",
-    ladder_x2_s:      t.data?.ladder_x2_s ?? "",
-    ladder_x5_s:      t.data?.ladder_x5_s ?? "",
-    ladder_x10_s:     t.data?.ladder_x10_s ?? "",  // capturable upside from gate open
+    // (ladder_x*_s / extended_tracked retired 2026-09-26 — superseded by fc_* columns)
     tracked_s:       t.data?.trackedS ?? "",
     // ── feature snapshot at the sustained moment (for runner-vs-dud analysis) ──
     f_devSol:        t.data?.f_devSol ?? "",
@@ -217,6 +214,23 @@ export function deriveRow(t) {
     curve_paper_pct:     t.data?.curve_paper_pct ?? "",
     curve_peak_pct:      t.data?.curve_peak_pct ?? "",
     curve_exec_gap_pct:  t.data?.curve_exec_gap_pct ?? "",
+    // ATA rent refund (separate tx after the sell) — add to sol_received for true net
+    rent_reclaimed_sol:  t.data?.rent_reclaimed_sol ?? "",
+    rent_reclaim_estimated: t.data?.rent_reclaim_estimated ?? "",
+    // free-carry residual path, as multiples of the TP price (freeCarry.js)
+    fc_status: t.data?.fc_status ?? "", fc_base: t.data?.fc_base ?? "",
+    fc_tp_curve_price: t.data?.fc_tp_curve_price ?? "",
+    fc_span_s: t.data?.fc_span_s ?? "", fc_samples: t.data?.fc_samples ?? "",
+    fc_curve_samples: t.data?.fc_curve_samples ?? "", fc_max_gap_s: t.data?.fc_max_gap_s ?? "",
+    fc_max_mult: t.data?.fc_max_mult ?? "", fc_max_s: t.data?.fc_max_s ?? "",
+    fc_min_mult: t.data?.fc_min_mult ?? "", fc_min_s: t.data?.fc_min_s ?? "",
+    fc_terminal_mult: t.data?.fc_terminal_mult ?? "", fc_terminal_src: t.data?.fc_terminal_src ?? "",
+    fc_x2_s: t.data?.fc_x2_s ?? "", fc_x5_s: t.data?.fc_x5_s ?? "", fc_x10_s: t.data?.fc_x10_s ?? "",
+    fc_x2_src: t.data?.fc_x2_src ?? "", fc_graduated_s: t.data?.fc_graduated_s ?? "",
+    fc_live_5m: t.data?.fc_live_5m ?? "", fc_max_sweep_gap_s: t.data?.fc_max_sweep_gap_s ?? "",
+    fc_censored: t.data?.fc_censored ?? "",
+    // failed-buy cost (landed-but-failed txs still pay fees)
+    buy_fail_fee_sol: t.data?.buy_fail_fee_sol ?? "", buy_fail_sig: t.data?.buy_fail_sig ?? "",
     // absolute prices at each milestone
     price_eligible:  p.eligible  ?? "", price_sustained: p.sustained ?? "",
     price_queued:    p.queued    ?? "", price_bought:    p.bought    ?? "",

@@ -148,10 +148,21 @@ export function recordTrajectorySnapshot(mint, label, snap) {
   if (!db[mint] || db[mint].path[label] != null) return;
   const p0 = db[mint].priceAtReady;
   const v0 = db[mint].volAtReady;
+  // FRESHNESS (research 2026-09-26b, retraction 1): 88 of 155 t+5m rows had volMult
+  // exactly 1.0 and pc exactly 0 — the feed returned the READY snapshot unchanged, and
+  // those were written as "no change". That manufactured a +0.37 correlation that was
+  // really "did the feed return fresh data at all". An unchanged price AND volume is
+  // now written as blank, flagged fresh=0, with trades5m kept so a genuinely dead token
+  // (trades5m = 0) can still be told apart from a stale cache. age_s records when the
+  // sample actually landed — the tracker polls stalest-first and can be late.
+  const unchanged = snap.price === p0 && snap.vol === v0;
   db[mint].path[label] = {
-    pc: (p0 > 0 && snap.price > 0) ? +(((snap.price - p0) / p0) * 100).toFixed(2) : "",
-    volMult: (v0 > 0 && snap.vol > 0) ? +(snap.vol / v0).toFixed(2) : "",
-    bp: snap.bp ?? "",
+    pc: (!unchanged && p0 > 0 && snap.price > 0) ? +(((snap.price - p0) / p0) * 100).toFixed(2) : "",
+    volMult: (!unchanged && v0 > 0 && snap.vol > 0) ? +(snap.vol / v0).toFixed(2) : "",
+    bp: unchanged ? "" : (snap.bp ?? ""),
+    fresh: unchanged ? 0 : 1,
+    trades5m: snap.trades5m ?? "",
+    age_s: Math.round((Date.now() - db[mint].readyAt) / 1000),
   };
   saveTraj(db);
 }
@@ -168,12 +179,16 @@ export function downloadTrajectoryCSV() {
       flat[`${o}_pc`] = p.pc ?? "";
       flat[`${o}_volMult`] = p.volMult ?? "";
       flat[`${o}_bp`] = p.bp ?? "";
+      flat[`${o}_fresh`] = p.fresh ?? "";
+      flat[`${o}_trades5m`] = p.trades5m ?? "";
+      flat[`${o}_age_s`] = p.age_s ?? "";
     }
     return flat;
   });
   const base = ["mint", "symbol", "readyAtISO", "utcHour", "dow", "session", "weekend",
     "creator", "score", "priceAtReady", "volAtReady", "bpAtReady", "liqAtReady", "pcAtReady"];
-  const pathCols = offs.flatMap(o => [`${o}_pc`, `${o}_volMult`, `${o}_bp`]);
+  const pathCols = offs.flatMap(o => [`${o}_pc`, `${o}_volMult`, `${o}_bp`,
+    `${o}_fresh`, `${o}_trades5m`, `${o}_age_s`]);
   download(`discovery-trajectory-${new Date().toISOString().slice(0, 10)}.csv`,
     csv(rows, [...base, ...pathCols]));
 }

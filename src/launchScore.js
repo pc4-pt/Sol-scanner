@@ -82,11 +82,23 @@ export class CreatorHistory {
 }
 
 // ── The score: logistic on [log1p(dev_sol), prior_rate, log1p(prior_count), mayhem] ──
+// Set false to restore the model's original priorRate contribution.
+export const USE_PRIOR_RATE = false;
+
 export function launchScore(ev, prior = { priorCount: 0, priorGrads: 0 }) {
   const priorRate = prior.priorCount > 0 ? prior.priorGrads / prior.priorCount : 0;
+  // priorRate (= priorGrads / priorCount) carries coefficient +0.4997 — a POSITIVE
+  // contribution. Own captures (n=1,266) put f_priorGrads at rho -0.087 against upside:
+  // prior graduations do not predict better outcomes and may be mildly negative. Rather
+  // than retrain, substitute the model's own mean for this feature so the standardised
+  // term is exactly zero and the contribution vanishes, leaving every other coefficient
+  // untouched. priorGrads is still captured and still shown — this changes how it is
+  // USED, not whether it is logged.
+  // (log1p(priorCount) is coefficient -0.6433, so serial launchers are already
+  // penalised by the model — consistent with the rho -0.206 finding. Left in place.)
   const raw = [
     Math.log1p(Math.max(0, Number(ev.solAmount) || 0)),
-    priorRate,
+    USE_PRIOR_RATE ? priorRate : MODEL.mean[1],
     Math.log1p(prior.priorCount || 0),
     ev.is_mayhem_mode ? 1 : 0,
   ];

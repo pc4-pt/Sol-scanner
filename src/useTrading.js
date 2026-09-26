@@ -10,7 +10,7 @@ import { checkTokenSafety } from "./safety.js";
 import { pumpPortalTrade, getTokenBalance, getTxSolDelta, getTxTokenDelta, getSolBalance,
          closeTokenAccount, getBondingCurveState, priceImpactPct, maxSizeForImpact } from "./pumpPortal.js";
 import { useBurner } from "./burnerWallet.js";
-import { flagExtendedTracking } from "./pumpStream.js";
+import { startFreeCarry, pollFreeCarry } from "./freeCarry.js";
 import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
 
@@ -463,6 +463,17 @@ export function useTrading() {
           buy_fail_slippage_pct: settings.pumpSlippage ?? 5,
         });
         console.warn(`[buyfail] ${queueItem.symbol} unconfirmed — ${slipFail ? "SLIPPAGE EXCEEDED" : (err || "timeout")}`);
+        // A tx that LANDED and failed on-chain (e.g. slippage) still paid base + priority
+        // fee. That cost never reaches pnlPct, so record it for the futility rule
+        // (research 2026-09-26b, amendment 4). Fire-and-forget: getTxSolDelta retries for
+        // ~15s and a dropped tx returns null, which must not hold up the retry.
+        if (sig) {
+          const mint = queueItem.tokenAddress, sym = queueItem.symbol;
+          getTxSolDelta(connection, sig, effPublicKey).then(d => {
+            if (d != null && d < 0) logMilestone(mint, sym, "buy_fail_fee", {
+              buy_fail_fee_sol: +(-d).toFixed(6), buy_fail_sig: sig });
+          }).catch(() => {});
+        }
         notify(`✕ ${queueItem.symbol} buy not confirmed (${err || "timeout"}) — will retry`, "warn");
         setExecuting(prev => ({ ...prev, [queueItem.id]: false }));
         buyFiringRef.current.delete(queueItem.id);
@@ -813,12 +824,13 @@ export function useTrading() {
     // Curve price AT THE TRIGGER — the clean counterpart to triggerPrice. Comparing
     // curve-entry to curve-exit gives a paper return with no feed contamination, which
     // is what separates "the signal was wrong" from "the execution was wrong".
-    let triggerCurvePrice = null, triggerCurvePct = null;
+    let triggerCurvePrice = null, triggerCurvePct = null, triggerRealSol = null;
     if (position.entryCurvePrice > 0) {
       try {
         const cs = await getBondingCurveState(connection, position.tokenAddress);
         if (cs && cs.virtualTokenReserves > 0) {
           triggerCurvePrice = cs.virtualSolReserves / cs.virtualTokenReserves;
+          triggerRealSol = cs.realSolReserves;
           triggerCurvePct = ((triggerCurvePrice - position.entryCurvePrice) / position.entryCurvePrice) * 100;
         }
       } catch { /* measurement only */ }
@@ -868,7 +880,21 @@ export function useTrading() {
         setTimeout(() => {
           closeTokenAccount({ connection, pubkey: effPublicKey,
             mint: position.tokenAddress, signTransaction: effSignTransaction })
-            .then(s => { if (s) console.warn(`[rent] reclaimed ~0.00204 SOL from ${position.symbol}`); });
+            .then(async s => {
+              if (!s) return;
+              // Record what came back. pnlPct books the ~0.00204 SOL rent deposit as a
+              // cost at buy time (it is in sol_spent) but the refund lands in a separate
+              // tx after the sell, so pnlPct understates every trade by ~2 points at a
+              // 0.1 SOL stake. Kept separate rather than folded into pnlPct so the
+              // historical series stays comparable; analysis adds it back.
+              let refund = null;
+              try { refund = await getTxSolDelta(connection, s, effPublicKey); } catch {}
+              const v = (refund != null && refund > 0) ? refund : 0.00203928;
+              logMilestone(position.tokenAddress, position.symbol, "rent_reclaimed", {
+                rent_reclaimed_sol: +v.toFixed(6), rent_reclaim_estimated: refund > 0 ? 0 : 1 });
+              console.warn(`[rent] reclaimed ${v.toFixed(5)} SOL from ${position.symbol}`);
+            })
+            .catch(() => {});
         }, 5000);
       }
 
@@ -916,8 +942,16 @@ export function useTrading() {
       // Free-carry measurability: extend passive tracking to 24h for tokens we took
       // profit on. Only these can carry a zero-cost residual, so this is exactly the
       // subset the ladder test needs — without extending the whole ready set.
+      // Now a standalone, persisted tracker priced from the TP (not ready) price — see
+      // freeCarry.js for why the earlier in-tracker ladder was replaced.
       if (reason === "TAKE_PROFIT") {
-        try { flagExtendedTracking(position.tokenAddress); } catch {}
+        getSolUsd().catch(() => null).then(solUsd => {
+          try {
+            startFreeCarry({ mint: position.tokenAddress, symbol: position.symbol,
+              tpCurve: triggerCurvePrice, tpFeedUsd: triggerPrice, solUsd,
+              tpRealSol: triggerRealSol });
+          } catch {}
+        });
       }
       logMilestone(position.tokenAddress, position.symbol, "sold", {
         exitPrice: position.currentPrice, price: position.currentPrice,
@@ -1500,6 +1534,20 @@ export function useTrading() {
   // Computes a timing signal: hot (accelerating + buy pressure) → fading (rolling over).
   const queueRef = useRef([]);
   useEffect(() => { queueRef.current = queue; }, [queue]);
+
+  // Free-carry residual sweep — every 30s, independent of open positions, persisted
+  // across reloads. ~1 curve read per tracked residual per sweep (≈1/day enter).
+  const fcBusyRef = useRef(false);
+  useEffect(() => {
+    const iv = setInterval(async () => {
+      if (fcBusyRef.current) return;
+      fcBusyRef.current = true;
+      try { await pollFreeCarry({ connection, getBondingCurveState, fetchTokenActivity, logMilestone }); }
+      catch (e) { console.warn("[freecarry] sweep failed:", e?.message); }
+      finally { fcBusyRef.current = false; }
+    }, 30000);
+    return () => clearInterval(iv);
+  }, [connection]);
   useEffect(() => {
     const iv = setInterval(async () => {
       const launchItems = queueRef.current.filter(q => q.signal?.type === "LAUNCH");

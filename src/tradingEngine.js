@@ -530,7 +530,16 @@ export const DEFAULT_TRADE_SETTINGS = {
                                   // separates, 26.2% reaching +15% vs 13.0% for Q1. Use as
                                   // a THRESHOLD near the Q4 boundary, not a scaled score.
                                   // Matches the Cox HR 4.51 above-platform-default result.
-  maxPriorCount:      0,          // 0 = off. Own captures: f_priorCount rho -0.206 —
+  maxPriorCount:      15,         // ENABLED, cut derived from the data rather than chosen.
+                                  // Upside by prior-launch band (n=9,914): 0-1 -> 24% reach
+                                  // +15%, 1-2 -> 20%, 2-4 -> 18%, 4-8 -> 16%, 8-16 -> 14%,
+                                  // 16+ -> 6%. The gradient is monotone but shallow until
+                                  // the 16+ bucket, which falls off a cliff at under half
+                                  // the next band. Cutting there removes the bad tail for
+                                  // ~8% of flow (4.08 -> 3.75 queued/day); tighter cuts buy
+                                  // only 1-2 points of hit rate for a third of the flow,
+                                  // which is the wrong trade at 263k launches/day.
+                                  // Original finding: f_priorCount rho -0.206 —
                                   // SERIAL LAUNCHERS DO WORSE. Set >0 to reject creators
                                   // with more than this many prior launches. Note
                                   // f_priorGrads rho -0.087: prior graduations do NOT
