@@ -5,7 +5,7 @@
 // turn on auto-queue, and buys are manual unless autoExecute is on.
 
 import { useEffect, useRef, useState, useMemo } from "react";
-import { useLaunchStream } from "./pumpStream.js";
+import { useLaunchStream, getStreamDiag } from "./pumpStream.js";
 import { MODEL_INFO } from "./launchScore.js";
 import { BurnerWallet } from "./BurnerWallet.jsx";
 import { PumpPortalProbe } from "./PumpPortalProbe.jsx";
@@ -61,6 +61,7 @@ export function LaunchFeed({ trading }) {
     maxSustainPcH1: s.maxSustainPcH1 ?? 120,
     minSustainVolH1: s.minSustainVolH1 ?? 1500,
     validateMinScore: Math.min(minScore, s.minExecScore ?? 68),
+    queueMinScore: s.minExecScore ?? 68,
   });
 
   const ranked = useMemo(
@@ -120,6 +121,13 @@ export function LaunchFeed({ trading }) {
         + `held<${(minAgeMs/1000)}s ${cut.tooYoung} | failed-filter(vol/pcH1) ${cut.filter} | `
         + `score<${minExec} ${cut.score} | dev<${minDev} ${cut.dev} | serial ${cut.serial||0} | mill ${cut.mill} `
         + `>>> QUEUED ${cut.queued}`);
+      // Throughput line: if sampleEvery climbs past ~25s or the oldest launch is under
+      // ~5 min, tokens cannot complete confirm → sustained → hold and nothing queues.
+      const d = getStreamDiag();
+      const oldest = launches.length ? Math.round((now - Math.min(...launches.map(l => l.ts || now))) / 1000) : 0;
+      console.warn(`[pipeline] ${d.perMin} launches/min | polled pool ${d.pool} (queue-eligible ${d.qPool ?? 0}) | `
+        + `batch ${d.batch}/6s | each sampled every ~${d.sampleEveryS ?? "-"}s | `
+        + `oldest in list ${oldest}s${d.evictedInProgress ? ` | CAP HIT ${d.evictedInProgress}x` : ""}`);
     }
   }, [launches, s.launchAutoQueue, s.minExecScore, s.minDevSol, s.blockTokenMills, s.millMinLaunches, trading]);
 

@@ -18,6 +18,23 @@ import { recordGraduation, recordGradSnapshot, recordCreatorEvent,
 const URL = "wss://pumpportal.fun/api/data";
 
 // Framework-agnostic engine: connect, score, callback. UI subscribes via the hook.
+// ── PIPELINE THROUGHPUT DIAGNOSTICS ────────────────────────────────────────────
+// A token needs ~4–5 minutes of residence to queue: 90s confirm window, ≥4 polls
+// spanning ≥54s to read as sustained, then a 75s continuous hold. Two things can make
+// that impossible while the feed still LOOKS alive: the launch list (newest-N) turning
+// over faster than that, and the poll budget being spread across too many tokens.
+// Both scale with launch rate, so they fail together and silently. Exposed here so
+// the funnel log can show them.
+export const streamDiag = { arrivals: [], pool: 0, batch: 0, sampleEveryS: null, evictedInProgress: 0 };
+function launchesPerMin() {
+  const now = Date.now();
+  streamDiag.arrivals = streamDiag.arrivals.filter(t => now - t < 300000);
+  return streamDiag.arrivals.length / 5;
+}
+export function getStreamDiag() {
+  return { ...streamDiag, perMin: +launchesPerMin().toFixed(1), arrivals: undefined };
+}
+
 export function createPumpStream({ onLaunch, onMigration, onStatus }) {
   let ws = null, stop = false, retry = 0;
   const history = new CreatorHistory();
@@ -115,6 +132,9 @@ async function assessLaunch(mint, opts) {
 
 // React hook: ranked live feed + connection status + creator-history stats.
 // Polls activity/eligibility so momentum stays live and stagnant→active transitions surface.
+const PIPE_MAX_AGE_MS = 15 * 60 * 1000;   // past this, a token is no longer "in progress"
+const PIPE_HARD_CAP = 200;               // memory / poll-budget ceiling on in-progress tokens
+
 export function useLaunchStream({
   enabled = true, keep = 80,
   confirmWindowSec = 90, probeSol = 0.05, minRecovery = 0.7,
@@ -124,6 +144,7 @@ export function useLaunchStream({
   minSustainedAgeSec = 75,
   minSustainPcH1 = 40, maxSustainPcH1 = 120, minSustainVolH1 = 1500,
   validateMinScore = 40,
+  queueMinScore = 68,
 } = {}) {
   const [launches, setLaunches] = useState([]);
   const [status, setStatus]     = useState("idle");
@@ -140,16 +161,34 @@ export function useLaunchStream({
   useEffect(() => {
     cfgRef.current = { confirmWindowSec, probeSol, minRecovery, minTrades5m,
                        minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore,
-                       minSustainPcH1, maxSustainPcH1, minSustainVolH1, validateMinScore };
-  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, minSustainPcH1, maxSustainPcH1, minSustainVolH1, validateMinScore]);
+                       minSustainPcH1, maxSustainPcH1, minSustainVolH1, validateMinScore, queueMinScore };
+  }, [confirmWindowSec, probeSol, minRecovery, minTrades5m, minLiqUsd, collapseDropPct, sustainSec, minSamples, minSustainScore, minSustainPcH1, maxSustainPcH1, minSustainVolH1, validateMinScore, queueMinScore]);
 
   useEffect(() => {
     if (!enabled) { setStatus("off"); return; }
     const engine = createPumpStream({
       onLaunch: (l) => {
+        streamDiag.arrivals.push(Date.now());
         setLaunches((prev) => {
           if (prev.some((x) => x.mint === l.mint)) return prev;   // dedupe by mint
-          return [{ ...l, eligibility: { state: "pending" } }, ...prev].slice(0, keep);
+          const next = [{ ...l, eligibility: { state: "pending" } }, ...prev];
+          if (next.length <= keep) return next;
+          // EVICTION. Previously a plain newest-N cut: when launch rate rises, every
+          // token was pushed out before it could finish confirm → sustained → hold, and
+          // the pipeline queued nothing while the feed looked busy (2026-10: 3 days of
+          // zero, funnel stuck at not-eligible 73–80 of 80). Now tokens that can never
+          // queue go first (below the polling score floor, collapsed, graduated, or past
+          // the pipeline age), and a token still in progress is never pushed out by
+          // newer launches. Display stays newest-first.
+          const now = Date.now();
+          const minS = cfgRef.current?.validateMinScore ?? 40;
+          const inProgress = (x) => !x.graduated && x.eligibility?.state !== "collapsed"
+            && (x.score ?? 0) >= minS && now - (x.ts || now) < PIPE_MAX_AGE_MS;
+          const live = next.filter(inProgress).slice(0, PIPE_HARD_CAP);
+          const rest = next.filter((x) => !inProgress(x)).slice(0, Math.max(0, keep - live.length));
+          const keepSet = new Set([...live, ...rest].map((x) => x.mint));
+          if (next.filter(inProgress).length > PIPE_HARD_CAP) streamDiag.evictedInProgress++;
+          return next.filter((x) => keepSet.has(x.mint));
         });
         setStats(engine.history.stats());
       },
@@ -220,8 +259,23 @@ export function useLaunchStream({
           && (l.score ?? 0) >= c.validateMinScore
           && now - l.ts >= c.confirmWindowSec * 1000
           && !TERMINAL.has(l.eligibility?.state))
-        .sort((a, b) => (a.eligibility?.at || 0) - (b.eligibility?.at || 0)); // stalest first
-      const batch = due.slice(0, 4);
+        // Queue-eligible scores first, then stalest. Tokens between validateMinScore and
+        // minExecScore are polled only for passive research tracking and can never queue;
+        // under load they must not dilute sampling of the ones that can.
+        .sort((a, b) => {
+          const qa = (a.score ?? 0) >= (c.queueMinScore ?? 0) ? 0 : 1;
+          const qb = (b.score ?? 0) >= (c.queueMinScore ?? 0) ? 0 : 1;
+          return qa - qb || (a.eligibility?.at || 0) - (b.eligibility?.at || 0);
+        });
+      // Adaptive poll batch: enough to sample every due token about every 21s (so 4
+      // samples land inside the 90s sustain window), between 4 and 8 per 6s tick —
+      // 40–80 DexScreener calls/min, inside its 300/min limit alongside the trackers.
+      const batchN = Math.min(8, Math.max(4, Math.ceil(due.length / 3.5)));
+      const batch = due.slice(0, batchN);
+      const qPool = due.filter((l) => (l.score ?? 0) >= (c.queueMinScore ?? 0)).length;
+      streamDiag.pool = due.length; streamDiag.qPool = qPool; streamDiag.batch = batchN;
+      // sampling interval for the queue-eligible tokens (they are polled first)
+      streamDiag.sampleEveryS = qPool ? +(Math.max(1, qPool / batchN) * 6).toFixed(0) : null;
       for (const l of batch) {
         const first = !l.eligibility?.at;
         if (first) {
