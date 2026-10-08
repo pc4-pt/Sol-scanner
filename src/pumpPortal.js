@@ -9,6 +9,7 @@ import { VersionedTransaction, PublicKey, Transaction, TransactionInstruction } 
 
 const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
 const ASSOC_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS5EPFLC1PHnBqCXEpPxuEb");
 
 // Reclaim the ~0.00204 SOL rent locked in an emptied token account.
 //
@@ -18,22 +19,34 @@ const ASSOC_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25ef
 // Closing the account returns it. Best-effort and fully non-blocking: this runs AFTER
 // the sell has settled, and any failure here must never affect the trade.
 export async function closeTokenAccount({ connection, pubkey, mint, signTransaction }) {
+  // 2026-10-08: rent_reclaimed_sol was empty on 16/16 trades and nothing was logged.
+  // Two silent exits were the cause candidates: (a) the ATA was derived with the classic
+  // SPL Token program only — a Token-2022 mint has a different ATA, so the lookup found
+  // nothing and returned quietly; (b) a single check 5s after the sell can still see the
+  // pre-sell balance. Now: the token program is read from the mint's owner, the empty
+  // check retries, and every skip says why.
+  if (!connection || !pubkey || !mint || !signTransaction) return null;
   try {
-    if (!connection || !pubkey || !mint || !signTransaction) return null;
     const mintPk = new PublicKey(mint);
+    const mintInfo = await connection.getAccountInfo(mintPk);
+    const programId = mintInfo?.owner?.equals?.(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
     const [ata] = PublicKey.findProgramAddressSync(
-      [pubkey.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintPk.toBuffer()],
+      [pubkey.toBuffer(), programId.toBuffer(), mintPk.toBuffer()],
       ASSOC_TOKEN_PROGRAM_ID,
     );
-    // Only close if it exists AND is empty — never destroy a position.
-    const info = await connection.getParsedAccountInfo(ata);
-    if (!info?.value) return null;
-    const amt = info.value.data?.parsed?.info?.tokenAmount?.amount;
-    if (amt == null || amt !== "0") return null;
+    let amt = null;
+    for (const waitMs of [0, 10000, 25000]) {
+      if (waitMs) await new Promise(r => setTimeout(r, waitMs));
+      const info = await connection.getParsedAccountInfo(ata);
+      if (!info?.value) { console.warn(`[rent] no token account for ${mint.slice(0,6)} (${programId === TOKEN_2022_PROGRAM_ID ? "token-2022" : "spl"}) — nothing to close`); return null; }
+      amt = info.value.data?.parsed?.info?.tokenAmount?.amount;
+      if (amt === "0") break;
+    }
+    if (amt !== "0") { console.warn(`[rent] ${mint.slice(0,6)} account not empty (${amt}) after retries — not closing`); return null; }
 
-    // SPL Token `CloseAccount` = instruction index 9; accounts: [account, dest, owner]
+    // CloseAccount = instruction index 9 in both SPL Token and Token-2022; accounts: [account, dest, owner]
     const ix = new TransactionInstruction({
-      programId: TOKEN_PROGRAM_ID,
+      programId,
       keys: [
         { pubkey: ata,    isSigner: false, isWritable: true },
         { pubkey,         isSigner: false, isWritable: true },   // rent refunded to wallet
@@ -48,7 +61,7 @@ export async function closeTokenAccount({ connection, pubkey, mint, signTransact
     const sig = await connection.sendRawTransaction(signed.serialize(), { skipPreflight: false });
     return sig;
   } catch (e) {
-    console.warn("[rent] close account skipped:", e?.message || e);
+    console.warn("[rent] close account failed:", e?.message || e);
     return null;
   }
 }

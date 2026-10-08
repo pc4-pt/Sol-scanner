@@ -229,6 +229,7 @@ export function deriveRow(t) {
     fc_x2_src: t.data?.fc_x2_src ?? "", fc_graduated_s: t.data?.fc_graduated_s ?? "",
     fc_live_5m: t.data?.fc_live_5m ?? "", fc_max_sweep_gap_s: t.data?.fc_max_sweep_gap_s ?? "",
     fc_censored: t.data?.fc_censored ?? "",
+    fc_unit_bug: t.data?.fc_unit_bug ?? "",
     // failed-buy cost (landed-but-failed txs still pay fees)
     buy_fail_fee_sol: t.data?.buy_fail_fee_sol ?? "", buy_fail_sig: t.data?.buy_fail_sig ?? "",
     // absolute prices at each milestone

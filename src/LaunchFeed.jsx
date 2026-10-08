@@ -100,6 +100,9 @@ export function LaunchFeed({ trading }) {
       // Data: tokens fading inside 90s hit +20% only 17-30%; those holding 90-300s hit 60%.
       const since = l.eligibility?.sustainedSince;
       if (!since || now - since < minAgeMs) { cut.tooYoung++; continue; }
+      // launch-age cap: sustained must have started within maxSustainStartSec of launch
+      const maxStart = (s.maxSustainStartSec ?? 300) * 1000;
+      if (maxStart > 0 && l.ts && since - l.ts > maxStart) { cut.tooOld = (cut.tooOld||0)+1; continue; }
       if (l.eligibility?.passedFilter !== 1) { cut.filter++; continue; }           // non-mayhem + pcH1 + volH1
       if (l.score < minExec) { cut.score++; continue; }
       if ((l.devSol ?? 0) < minDev) { cut.dev++; continue; }
@@ -118,7 +121,7 @@ export function LaunchFeed({ trading }) {
       funnelRef.current = now;
       console.warn(`[funnel] tracking ${launches.length} | already-seen ${cut.seen} | `
         + `not-eligible ${cut.notEligible} | not-sustained ${cut.notSustained} | `
-        + `held<${(minAgeMs/1000)}s ${cut.tooYoung} | failed-filter(vol/pcH1) ${cut.filter} | `
+        + `held<${(minAgeMs/1000)}s ${cut.tooYoung} | too-old ${cut.tooOld||0} | failed-filter(vol/pcH1) ${cut.filter} | `
         + `score<${minExec} ${cut.score} | dev<${minDev} ${cut.dev} | serial ${cut.serial||0} | mill ${cut.mill} `
         + `>>> QUEUED ${cut.queued}`);
       // Throughput line: if sampleEvery climbs past ~25s or the oldest launch is under

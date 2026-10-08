@@ -472,6 +472,14 @@ export const DEFAULT_TRADE_SETTINGS = {
   // ── Sustained persistence gate ───────────────────────────────────────────
   // Token must hold sustained CONTINUOUSLY this long before it can be queued.
   // Data: fading inside 90s → 17-30% hit +20%; holding 90-300s → 60%.
+  // LAUNCH-AGE CAP (2026-10-08). Until 10-07 the 80-slot launch list pushed tokens out
+  // after ~4–5 min, which silently capped entry age: 71 of 76 queued tokens were <=4 min
+  // old at sustained. Every result in this project was measured on that population. The
+  // 10-07 eviction fix removed the cap, and 12 of the next 18 queued tokens were 5–11 min
+  // old, with 5 of 16 trades losing worse than -25% (vs 3 of 62 before). This restores
+  // the old population explicitly, independent of launch rate: sustained must begin
+  // within this many seconds of the launch.
+  maxSustainStartSec:   300,
   minSustainedAgeSec:   75,       // REVERTED 25 -> 75. The 25s change rested on a +0.87
                                   // correlation between entry slip and drag — but BOTH metrics
                                   // are computed from entryPrice, so an inflated entryPrice

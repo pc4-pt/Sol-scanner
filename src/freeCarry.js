@@ -23,6 +23,7 @@ const KEY = "freecarry_v1";
 const HORIZON_S = 86400;
 const RUNGS = [2, 5, 10];
 const CENSOR_GAP_S = 600;
+const PUMP_DECIMALS_SCALE = 1e6;
 
 function load() {
   try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; }
@@ -38,13 +39,18 @@ export function startFreeCarry({ mint, symbol, tpCurve, tpFeedUsd, solUsd, tpRea
   if (!mint) return null;
   const db = load();
   if (db[mint]) return db[mint];              // one observation per mint
-  const baseUsd = (tpCurve > 0 && solUsd > 0) ? tpCurve * solUsd : (tpFeedUsd || null);
+  // tpCurve is SOL per RAW token unit (virtual reserves are u64 base units); the feed
+  // quotes USD per WHOLE token. pump.fun mints use 6 decimals, so scale by 1e6. Missing
+  // this made every post-graduation feed multiple ~1,000,000x too large (2026-10-08:
+  // fc_max_mult 2.4M on XEC) and would have registered false 2x/5x/10x rungs.
+  const baseUsd = (tpCurve > 0 && solUsd > 0) ? tpCurve * PUMP_DECIMALS_SCALE * solUsd : (tpFeedUsd || null);
   if (!(tpCurve > 0) && !(baseUsd > 0)) return null;
   db[mint] = {
     mint, symbol: symbol || "?", t0: Date.now(),
     tpCurve: tpCurve > 0 ? tpCurve : null,
     baseUsd,
     base: tpCurve > 0 ? "curve" : "feed",     // feed base = weaker observation, flagged
+    unitFixed: 1,
     samples: 0, curveSamples: 0, feedSamples: 0,
     lastAt: null, maxGapS: 0,
     maxMult: null, maxAtS: null, minMult: null, minAtS: null,
@@ -80,6 +86,7 @@ function fields(r, status) {
     fc_x2_s: r.rung.x2 ?? "", fc_x5_s: r.rung.x5 ?? "", fc_x10_s: r.rung.x10 ?? "",
     fc_x2_src: r.rungSrc.x2 ?? "",
     fc_graduated_s: r.gradAtS ?? "",
+    fc_unit_bug: r.unitBug ? 1 : 0,        // 1 = contaminated by the pre-10-08 units bug; exclude
     fc_live_5m: r.live5m ?? "",           // 1 = curve still trading at +5m, 0 = frozen
     fc_max_sweep_gap_s: Math.round(r.maxSweepGapS || 0),
     // Censor, don't score: any unobserved stretch > 10 min means a rung, the min or the
@@ -98,6 +105,14 @@ export async function pollFreeCarry({ connection, getBondingCurveState, fetchTok
 
   for (const mint of mints) {
     const r = db[mint];
+    // Records started before the units fix carry a baseUsd 1e6 too small. Repair the
+    // base; if any feed sample was already taken, max/min/rungs are contaminated —
+    // flag the observation so analysis drops it rather than trusting it.
+    if (r.base === "curve" && !r.unitFixed) {
+      if (r.baseUsd > 0) r.baseUsd *= PUMP_DECIMALS_SCALE;
+      r.unitFixed = 1;
+      if (r.feedSamples > 0) r.unitBug = 1;
+    }
     const ageS = (now - r.t0) / 1000;
     if (r.lastSweepAt) r.maxSweepGapS = Math.max(r.maxSweepGapS || 0, (now - r.lastSweepAt) / 1000);
     r.lastSweepAt = now;
