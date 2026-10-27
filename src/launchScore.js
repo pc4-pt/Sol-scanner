@@ -10,6 +10,7 @@
 // launch_score.py on your real data and the scores update automatically.
 
 import MODEL from "./launchModel.json";
+import { safeSetItem } from "./storageGuard.js";
 
 const CREATOR_KEY = "solscanner_creator_history"; // creator -> { c: launches, g: graduations }
 const MINT_KEY    = "solscanner_mint_creator";    // recent mint -> creator (for migration attribution)
@@ -30,7 +31,7 @@ export function markGraduated(mint) {
   s.add(mint);
   let arr = [...s];
   if (arr.length > MAX_GRADS) arr = arr.slice(arr.length - MAX_GRADS);
-  try { localStorage.setItem(GRAD_KEY, JSON.stringify(arr)); } catch {}
+  try { safeSetItem(GRAD_KEY, JSON.stringify(arr)); } catch {}
 }
 export function isGraduated(mint) {
   try { return loadGradSet().has(mint); } catch { return false; }
@@ -43,7 +44,7 @@ function loadMap(key) {
 function saveMap(key, map, cap) {
   let entries = [...map.entries()];
   if (entries.length > cap) entries = entries.slice(entries.length - cap); // keep most recent
-  try { localStorage.setItem(key, JSON.stringify(Object.fromEntries(entries))); } catch {}
+  try { safeSetItem(key, JSON.stringify(Object.fromEntries(entries)), { critical: true }); } catch {}
 }
 
 // ── Persistent creator track record, built live from the stream ───────────────

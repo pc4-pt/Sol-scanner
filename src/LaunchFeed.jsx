@@ -6,6 +6,7 @@
 
 import { useEffect, useRef, useState, useMemo } from "react";
 import { useLaunchStream, getStreamDiag } from "./pumpStream.js";
+import { storageReport } from "./storageGuard.js";
 import { MODEL_INFO } from "./launchScore.js";
 import { BurnerWallet } from "./BurnerWallet.jsx";
 import { PumpPortalProbe } from "./PumpPortalProbe.jsx";
@@ -131,6 +132,8 @@ export function LaunchFeed({ trading }) {
       console.warn(`[pipeline] ${d.perMin} launches/min | polled pool ${d.pool} (queue-eligible ${d.qPool ?? 0}) | `
         + `batch ${d.batch}/6s | each sampled every ~${d.sampleEveryS ?? "-"}s | `
         + `oldest in list ${oldest}s${d.evictedInProgress ? ` | CAP HIT ${d.evictedInProgress}x` : ""}`);
+      const st = storageReport();
+      (st.pctOf5MB >= 85 ? console.error : console.warn)(`[storage] ${st.totalKB} KB used (~${st.pctOf5MB}% of 5 MB) | ${st.top.join(" | ")}`);
     }
   }, [launches, s.launchAutoQueue, s.minExecScore, s.minDevSol, s.blockTokenMills, s.millMinLaunches, trading]);
 

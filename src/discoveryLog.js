@@ -1,3 +1,4 @@
+import { safeSetItem } from "./storageGuard.js";
 // discoveryLog.js — passive research instrumentation, fully separate from live trading.
 //
 // Captures three things the existing lifecycle log doesn't, to answer the open questions:
@@ -16,9 +17,9 @@ const CREATOR_KEY = "discovery_creators_v1";
 const MAX_GRAD = 4000;
 
 function loadGrad() { try { return JSON.parse(localStorage.getItem(GRAD_KEY) || "{}"); } catch { return {}; } }
-function saveGrad(d) { try { localStorage.setItem(GRAD_KEY, JSON.stringify(d)); } catch {} }
+function saveGrad(d) { try { safeSetItem(GRAD_KEY, JSON.stringify(d)); } catch {} }
 function loadCreators() { try { return JSON.parse(localStorage.getItem(CREATOR_KEY) || "{}"); } catch { return {}; } }
-function saveCreators(d) { try { localStorage.setItem(CREATOR_KEY, JSON.stringify(d)); } catch {} }
+function saveCreators(d) { try { safeSetItem(CREATOR_KEY, JSON.stringify(d)); } catch {} }
 
 // ── time tagging ───────────────────────────────────────────────────────────
 export function timeTags(ts = Date.now()) {
@@ -120,7 +121,7 @@ export function getCreators() { return Object.values(loadCreators()); }
 const TRAJ_KEY = "discovery_trajectory_v1";
 const MAX_TRAJ = 4000;
 function loadTraj() { try { return JSON.parse(localStorage.getItem(TRAJ_KEY) || "{}"); } catch { return {}; } }
-function saveTraj(d) { try { localStorage.setItem(TRAJ_KEY, JSON.stringify(d)); } catch {} }
+function saveTraj(d) { try { safeSetItem(TRAJ_KEY, JSON.stringify(d)); } catch {} }
 
 export function recordTrajectoryStart(mint, symbol, info = {}) {
   if (!mint) return;

@@ -1,3 +1,4 @@
+import { safeSetItem } from "./storageGuard.js";
 // ── FREE-CARRY RESIDUAL CAPTURE ────────────────────────────────────────────────
 // Answers one question: had we kept a slice of each TAKE_PROFIT position instead of
 // selling 100%, what would that slice have been worth over the next 24h, relative to
@@ -29,7 +30,7 @@ function load() {
   try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; }
 }
 function save(db) {
-  try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* quota — best effort */ }
+  try { safeSetItem(KEY, JSON.stringify(db), { critical: true }); } catch { /* best effort */ }
 }
 
 // Called on a successful TAKE_PROFIT sell. tpCurve is the curve price (SOL/token) at

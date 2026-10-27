@@ -13,6 +13,7 @@ import { useBurner } from "./burnerWallet.js";
 import { startFreeCarry, pollFreeCarry } from "./freeCarry.js";
 import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
+import { safeSetItem } from "./storageGuard.js";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 const KEYS = {
@@ -64,7 +65,7 @@ function loadSettings() {
   return s;
 }
 function save(key, val) {
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+  try { safeSetItem(key, JSON.stringify(val), { critical: true }); } catch {}
 }
 
 // ── Queue staleness threshold (10 minutes) ────────────────────────────────────

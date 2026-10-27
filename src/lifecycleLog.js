@@ -1,3 +1,4 @@
+import { safeSetItem } from "./storageGuard.js";
 // lifecycleLog.js — timestamps every milestone in a token's lifecycle so the buy
 // window can be MEASURED, not eyeballed. Persists to localStorage; exports to CSV.
 //
@@ -25,7 +26,7 @@ function load() {
   try { cache = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { cache = {}; }
   return cache;
 }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(cache)); } catch {} }
+function save() { try { safeSetItem(KEY, JSON.stringify(cache)); } catch {} }
 
 const MAX_TOKENS = 3000;
 
