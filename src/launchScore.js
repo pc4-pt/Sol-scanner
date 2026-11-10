@@ -11,6 +11,7 @@
 
 import MODEL from "./launchModel.json";
 import { safeSetItem } from "./storageGuard.js";
+import { kvGet, kvSet } from "./kvStore.js";
 
 const CREATOR_KEY = "solscanner_creator_history"; // creator -> { c: launches, g: graduations }
 const MINT_KEY    = "solscanner_mint_creator";    // recent mint -> creator (for migration attribution)
@@ -20,9 +21,12 @@ const MAX_MINTS    = 30000;
 const MAX_GRADS    = 20000;
 
 // ── Graduated-mint set (shared across the feed, queue, and positions) ─────────
+// Module-level Set: isGraduated() is called on every render for every position and
+// launch, and previously re-parsed up to 20,000 mints from localStorage each time.
+let gradSet = null;
 function loadGradSet() {
-  try { return new Set(JSON.parse(localStorage.getItem(GRAD_KEY) || "[]")); }
-  catch { return new Set(); }
+  if (!gradSet) gradSet = new Set(kvGet(GRAD_KEY, null) || []);
+  return gradSet;
 }
 export function markGraduated(mint) {
   if (!mint) return;
@@ -31,20 +35,20 @@ export function markGraduated(mint) {
   s.add(mint);
   let arr = [...s];
   if (arr.length > MAX_GRADS) arr = arr.slice(arr.length - MAX_GRADS);
-  try { safeSetItem(GRAD_KEY, JSON.stringify(arr)); } catch {}
+  if (arr.length !== s.size) gradSet = new Set(arr);
+  kvSet(GRAD_KEY, arr);
 }
 export function isGraduated(mint) {
   try { return loadGradSet().has(mint); } catch { return false; }
 }
 
 function loadMap(key) {
-  try { return new Map(Object.entries(JSON.parse(localStorage.getItem(key) || "{}"))); }
-  catch { return new Map(); }
+  return new Map(Object.entries(kvGet(key, null) || {}));
 }
 function saveMap(key, map, cap) {
   let entries = [...map.entries()];
   if (entries.length > cap) entries = entries.slice(entries.length - cap); // keep most recent
-  try { safeSetItem(key, JSON.stringify(Object.fromEntries(entries)), { critical: true }); } catch {}
+  kvSet(key, Object.fromEntries(entries));
 }
 
 // ── Persistent creator track record, built live from the stream ───────────────

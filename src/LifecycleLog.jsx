@@ -1,6 +1,6 @@
 // LifecycleLog.jsx — the measured view of the buy window.
 import { useState, useEffect } from "react";
-import { getLog, deriveRow, summary, clearLog, downloadCSV } from "./lifecycleLog.js";
+import { getLog, deriveRow, summary, clearLog, downloadCSV, modeScorecard } from "./lifecycleLog.js";
 import { downloadGraduationsCSV, downloadCreatorsCSV, downloadTrajectoryCSV } from "./discoveryLog.js";
 
 const fmtS = (v) => (v == null || v === "" ? "—" : `${Number(v).toFixed(0)}s`);
@@ -71,6 +71,23 @@ export function LifecycleLog() {
         (the opportunity). <b>react</b> = queued→bought (is manual fast enough?). <b>in-time</b> =
         did you buy before it faded. Export to analyse whether the window is tradeable and where to tune.
       </p>
+
+      <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
+        letterSpacing: "0.1em", marginBottom: 6 }}>SCORECARD — live and paper trades, never pooled (rent-adjusted, one row per mint)</div>
+      {["live", "paper"].map(m => {
+        const c = modeScorecard(m);
+        return (
+          <div key={m} style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            <Stat label={m.toUpperCase()} value={c.n} sub="closed trades" />
+            <Stat label="win rate" value={c.n ? `${Math.round((c.wins / c.n) * 100)}%` : "—"} sub={`${c.wins}/${c.n}`} />
+            <Stat label="mean / trade" value={fmtPct(c.meanAdj)} sub="rent-adjusted" />
+            <Stat label="95% CI" value={c.ci ? `${c.ci[0].toFixed(1)} to ${c.ci[1].toFixed(1)}%` : "—"} sub={c.ci ? "bootstrap" : "needs ≥10 trades"} />
+            <Stat label="net SOL" value={c.n ? c.netSol.toFixed(4) : "—"} sub="incl. failed-tx fees" />
+            <Stat label="losses < −25%" value={c.tailLosses} sub={`buy fails ${c.buyFails}`} />
+          </div>
+        );
+      })}
+      <div style={{ height: 10 }} />
 
       <div style={{ fontSize: "0.6rem", color: "var(--muted)", fontFamily: "var(--font-mono,monospace)",
         letterSpacing: "0.1em", marginBottom: 6 }}>OPPORTUNITY — passive paper result of every sustained token</div>

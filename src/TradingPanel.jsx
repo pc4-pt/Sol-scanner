@@ -256,15 +256,57 @@ function SettingsPanel({ settings, updateSettings }) {
             description="Only queue EARLY MOMENTUM and UPTREND signals"/>
           <Toggle label="Scale stake by confidence" field="scaleByConfidence"
             description="Higher confidence → larger position (50%-100% of base stake)"/>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 0"}}>
+            <div>
+              <div style={{fontSize:"0.72rem",color:C.text}}>Trade mode</div>
+              <div style={{fontSize:"0.58rem",color:C.muted,marginTop:2}}>
+                PAPER runs the full pipeline with fills simulated on the live curve — no wallet, no SOL spent
+              </div>
+            </div>
+            <div style={{display:"flex",gap:4}}>
+              {["paper","live"].map(m=>{
+                const on=(settings.tradeMode??"paper")===m;
+                const col=m==="paper"?"#7c5cff":C.warn;
+                return <button key={m} onClick={()=>{
+                  if (m==="live" && !on && !confirm("Switch to LIVE trading? Buys will spend real SOL from the active wallet.")) return;
+                  updateSettings({tradeMode:m});
+                }} style={{padding:"3px 10px",borderRadius:4,cursor:"pointer",fontFamily:C.mono,fontSize:"0.62rem",
+                  background:on?col+"22":"transparent",border:`1px solid ${on?col:C.border}`,color:on?col:C.muted}}>
+                  {m.toUpperCase()}</button>;
+              })}
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 0"}}>
+            <div>
+              <div style={{fontSize:"0.72rem",color:C.text}}>Exit price source</div>
+              <div style={{fontSize:"0.58rem",color:C.muted,marginTop:2}}>
+                FEED = DexScreener (current) · CURVE = on-chain curve each tick (experimental — test in paper first)
+              </div>
+            </div>
+            <div style={{display:"flex",gap:4}}>
+              {["feed","curve"].map(m=>{
+                const on=(settings.exitPriceSource??"feed")===m;
+                return <button key={m} onClick={()=>updateSettings({exitPriceSource:m})}
+                  style={{padding:"3px 10px",borderRadius:4,cursor:"pointer",fontFamily:C.mono,fontSize:"0.62rem",
+                  background:on?C.accent+"22":"transparent",border:`1px solid ${on?C.accent:C.border}`,color:on?C.accent:C.muted}}>
+                  {m.toUpperCase()}</button>;
+              })}
+            </div>
+          </div>
           <Toggle label="Auto-execute trades" field="autoExecute"
-            description="⚠ REAL auto-buy: buys queued tokens automatically (rails below)"/>
+            description={(settings.tradeMode??"paper")==="paper"
+              ? "PAPER auto-buy: simulated fills on queued tokens (rails below)"
+              : "⚠ REAL auto-buy: buys queued tokens automatically (rails below)"}/>
           {settings.autoExecute && (<>
             <NumField label="↳ Burner floor" field="autoBuyMinBurnerSOL" min={0} max={2} step={0.01} suffix=" SOL"
               description="Never auto-buy below this balance — bounds your max spend"/>
             <NumField label="↳ Max open positions" field="maxConcurrentPositions" min={1} max={10} step={1}
               description="Never hold more than this many auto-bought positions at once"/>
-            <NumField label="↳ Session spend cap" field="autoBuySessionCapSOL" min={0.1} max={5} step={0.1} suffix=" SOL"
-              description="Stop auto-buying after this much spent this session"/>
+            {(settings.tradeMode??"paper")==="paper"
+              ? <NumField label="↳ Paper session cap" field="paperSessionCapSOL" min={1} max={500} step={1} suffix=" SOL"
+                  description="Simulated spend cap for a paper session"/>
+              : <NumField label="↳ Session spend cap" field="autoBuySessionCapSOL" min={0.1} max={5} step={0.1} suffix=" SOL"
+                  description="Stop auto-buying after this much spent this session"/>}
             <NumField label="↳ Daily-loss kill" field="autoBuyDailyLossKillSOL" min={0.1} max={5} step={0.1} suffix=" SOL"
               description="Halt auto-buy if today's realised loss exceeds this"/>
           </>)}
@@ -735,6 +777,7 @@ function PositionCard({ position, onSell, onRetry, onAbandon, executing, connect
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:7,flexWrap:"wrap"}}>
             <div style={{width:3,height:14,borderRadius:1,background:pnlColor,boxShadow:`0 0 5px ${pnlColor}`}}/>
             <Mono color={C.text} size="0.88rem" weight={700}>{position.symbol}</Mono>
+            {position.paper ? <Badge color="#7c5cff">◇ PAPER</Badge> : <Badge color={C.warn}>● LIVE</Badge>}
             {isGraduated(position.tokenAddress) && <Badge color="#00e5c3">◆ GRADUATED</Badge>}
             {position.partialTaken && <Badge color="#b8f542">½ BANKED +{Math.round(position.partialPct || 0)}%</Badge>}
             {position.momentum && (() => {
@@ -845,6 +888,7 @@ function HistoryRow({ trade }) {
         <div style={{display:"flex",alignItems:"center",gap:6}}>
           <div style={{width:2,height:12,borderRadius:1,background:color}}/>
           <Mono color={C.text} size="0.8rem" weight={700}>{trade.symbol}</Mono>
+          {trade.paper && <Badge color="#7c5cff">◇ PAPER</Badge>}
           <Badge color={rColors[trade.exitReason]||C.muted2}>{trade.exitReason}</Badge>
         </div>
         <div style={{marginLeft:8,marginTop:2,fontSize:"0.6rem",color:C.muted,fontFamily:C.mono}}>
@@ -981,6 +1025,11 @@ export function TradingPanel({ trading, solBalance }) {
                     }}>{opt.label}</button>
                   ))}
                 </div>
+                {(settings.tradeMode??"paper")==="paper"&&(
+                  <span style={{fontSize:"0.58rem",color:"#7c5cff",fontFamily:C.mono,flexShrink:0}}>
+                    ◇ PAPER MODE
+                  </span>
+                )}
                 {settings.autoExecute&&(
                   <span style={{fontSize:"0.58rem",color:C.warn,fontFamily:C.mono,flexShrink:0}}>
                     ⚠ AUTO ON

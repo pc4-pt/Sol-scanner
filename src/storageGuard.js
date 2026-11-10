@@ -6,7 +6,11 @@
 // position record. This module makes failures loud and, for trading-critical keys,
 // frees space by trimming the research stores (oldest half first) and retrying.
 
+// Research stores moved to IndexedDB on 2026-11-10 (kvStore.js). These only exist in
+// localStorage if IndexedDB is unavailable, in which case the old trimming applies.
 const RESEARCH_KEYS = [            // trimmed in this order, oldest entries first
+  "solscanner_creator_history",
+  "solscanner_mint_creator",
   "discovery_trajectory_v1",
   "discovery_graduations_v1",
   "discovery_creators_v1",

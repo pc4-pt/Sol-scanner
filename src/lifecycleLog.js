@@ -1,4 +1,5 @@
 import { safeSetItem } from "./storageGuard.js";
+import { kvGet, kvSet } from "./kvStore.js";
 // lifecycleLog.js — timestamps every milestone in a token's lifecycle so the buy
 // window can be MEASURED, not eyeballed. Persists to localStorage; exports to CSV.
 //
@@ -23,12 +24,12 @@ let cache = null;
 
 function load() {
   if (cache) return cache;
-  try { cache = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { cache = {}; }
+  cache = kvGet(KEY, null) || {};
   return cache;
 }
-function save() { try { safeSetItem(KEY, JSON.stringify(cache)); } catch {} }
+function save() { kvSet(KEY, cache); }
 
-const MAX_TOKENS = 3000;
+const MAX_TOKENS = 20000;   // IndexedDB-backed since 2026-11-10 (was 3,000 under the 5 MB localStorage cap)
 
 // A row is worth keeping if it reached sustained, was queued/traded, or has a paper
 // result. Rows that only ever hit "eligible" are noise — ~1,900/day of them — and are
@@ -216,6 +217,16 @@ export function deriveRow(t) {
     curve_peak_pct:      t.data?.curve_peak_pct ?? "",
     curve_exec_gap_pct:  t.data?.curve_exec_gap_pct ?? "",
     // ATA rent refund (separate tx after the sell) — add to sol_received for true net
+    // live | paper — set on bought/sold/buy_failed. Never pool the two.
+    trade_mode:          t.data?.trade_mode ?? "",
+    sim_venue:           t.data?.sim_venue ?? "",
+    sim_exit_venue:      t.data?.sim_exit_venue ?? "",
+    sim_fill_move_pct:   t.data?.sim_fill_move_pct ?? "",
+    exit_price_source:   t.data?.exit_price_source ?? "",
+    sell_fail_count:     t.data?.sell_fail_count ?? "",
+    sell_fail_fee_sol:   t.data?.sell_fail_fee_sol ?? "",
+    sell_delay_ms:       t.data?.sell_delay_ms ?? "",
+    sell_delay_cost_pct: t.data?.sell_delay_cost_pct ?? "",
     rent_reclaimed_sol:  t.data?.rent_reclaimed_sol ?? "",
     rent_reclaim_estimated: t.data?.rent_reclaim_estimated ?? "",
     // free-carry residual path, as multiples of the TP price (freeCarry.js)
@@ -317,6 +328,45 @@ export function summary() {
       if (!g.length) return null;
       return g.reduce((a, r) => a + Number(r.pnlPct) / Number(r.peakPnlPct), 0) / g.length;
     })(),
+  };
+}
+
+// ── LIVE vs PAPER scorecard ─────────────────────────────────────────────────────
+// Per trade mode, never pooled. Implements the evaluation rules agreed with the
+// research chat: one observation per mint, rent-adjusted P&L (rent_reclaimed_sol as
+// recorded), and a percentile bootstrap CI on the mean instead of a pass/fail
+// fragility reading. Failed-buy fees are charged against the mode's net SOL.
+export function modeScorecard(mode) {
+  const rows = getLog().map(deriveRow).filter(r => r.trade_mode === mode);
+  const sold = rows.filter(r => r.pnlPct !== "" && r.pnlPct != null && r.sol_spent !== "");
+  const adj = sold.map(r => {
+    const spent = Number(r.sol_spent) || 0;
+    const rent = Number(r.rent_reclaimed_sol) || 0;
+    return Number(r.pnlPct) + (spent > 0 ? (rent / spent) * 100 : 0);
+  });
+  const n = adj.length;
+  const mean = n ? adj.reduce((a, b) => a + b, 0) / n : null;
+  let ci = null;
+  if (n >= 10) {
+    const B = 2000, means = new Array(B);
+    for (let b = 0; b < B; b++) {
+      let sum = 0;
+      for (let i = 0; i < n; i++) sum += adj[(Math.random() * n) | 0];
+      means[b] = sum / n;
+    }
+    means.sort((x, y) => x - y);
+    ci = [means[Math.floor(0.025 * B)], means[Math.floor(0.975 * B)]];
+  }
+  const netSol = sold.reduce((a, r) => a + (Number(r.sol_received) || 0) - (Number(r.sol_spent) || 0)
+    + (Number(r.rent_reclaimed_sol) || 0), 0)
+    - rows.reduce((a, r) => a + (Number(r.buy_fail_fee_sol) || 0) + (Number(r.sell_fail_fee_sol) || 0), 0);
+  return {
+    mode, n,
+    wins: adj.filter(x => x > 0).length,
+    meanAdj: mean, ci,
+    netSol,
+    buyFails: rows.filter(r => r.buy_failed === 1 || r.buy_failed === "1").length,
+    tailLosses: adj.filter(x => x < -25).length,
   };
 }
 

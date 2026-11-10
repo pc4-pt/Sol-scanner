@@ -1,4 +1,5 @@
 import { safeSetItem } from "./storageGuard.js";
+import { kvGet, kvSet } from "./kvStore.js";
 // discoveryLog.js — passive research instrumentation, fully separate from live trading.
 //
 // Captures three things the existing lifecycle log doesn't, to answer the open questions:
@@ -14,12 +15,12 @@ import { safeSetItem } from "./storageGuard.js";
 
 const GRAD_KEY = "discovery_graduations_v1";
 const CREATOR_KEY = "discovery_creators_v1";
-const MAX_GRAD = 4000;
+const MAX_GRAD = 20000;
 
-function loadGrad() { try { return JSON.parse(localStorage.getItem(GRAD_KEY) || "{}"); } catch { return {}; } }
-function saveGrad(d) { try { safeSetItem(GRAD_KEY, JSON.stringify(d)); } catch {} }
-function loadCreators() { try { return JSON.parse(localStorage.getItem(CREATOR_KEY) || "{}"); } catch { return {}; } }
-function saveCreators(d) { try { safeSetItem(CREATOR_KEY, JSON.stringify(d)); } catch {} }
+function loadGrad() { return kvGet(GRAD_KEY, null) || {}; }
+function saveGrad(d) { kvSet(GRAD_KEY, d); }
+function loadCreators() { return kvGet(CREATOR_KEY, null) || {}; }
+function saveCreators(d) { kvSet(CREATOR_KEY, d); }
 
 // ── time tagging ───────────────────────────────────────────────────────────
 export function timeTags(ts = Date.now()) {
@@ -56,6 +57,11 @@ export function recordGraduation(mint, symbol, info = {}) {
     f_devSol: info.f_devSol ?? "", f_priorGrads: info.f_priorGrads ?? "",
     f_priorCount: info.f_priorCount ?? "", f_buyRatio: info.f_buyRatio ?? "",
     peakBeforeGrad: info.peakBeforeGrad ?? "",
+    // instant = migrated within 30s of first sight: created straight onto an AMM or a
+    // bot launching onto PumpSwap, NOT a bonding-curve graduation (50 of 70 on 11-09).
+    // Filter on grad_kind=curve for any graduation analysis.
+    grad_kind: (typeof info.launchToGradSec === "number" && info.launchToGradSec >= 30) ? "curve" : "instant",
+    priceAtGrad_src: info.priceAtGrad ? "grad" : "",
     path: {},                               // offsetLabel -> {price,volH1,bp,liq}
   };
   // prune oldest if over cap
@@ -94,6 +100,14 @@ export function recordCreatorEvent(creator, kind) {
   saveCreators(db);
 }
 
+export function setGradPriceFallback(mint, price, label) {
+  const db = loadGrad();
+  if (!db[mint] || db[mint].priceAtGrad) return;
+  db[mint].priceAtGrad = price;
+  db[mint].priceAtGrad_src = label || "first_sample";
+  saveGrad(db);
+}
+
 export function getGraduations() { return Object.values(loadGrad()); }
 
 // Graduations that still need post-grad samples. The in-memory tracking queue is lost
@@ -119,9 +133,9 @@ export function getCreators() { return Object.values(loadCreators()); }
 // This records price/volume/buy-pressure at ready, +1m, +3m, +5m so the SHAPE of the
 // move becomes a feature. Passive: never read by the trading path.
 const TRAJ_KEY = "discovery_trajectory_v1";
-const MAX_TRAJ = 4000;
-function loadTraj() { try { return JSON.parse(localStorage.getItem(TRAJ_KEY) || "{}"); } catch { return {}; } }
-function saveTraj(d) { try { safeSetItem(TRAJ_KEY, JSON.stringify(d)); } catch {} }
+const MAX_TRAJ = 20000;
+function loadTraj() { return kvGet(TRAJ_KEY, null) || {}; }
+function saveTraj(d) { kvSet(TRAJ_KEY, d); }
 
 export function recordTrajectoryStart(mint, symbol, info = {}) {
   if (!mint) return;
@@ -228,7 +242,7 @@ export function downloadGraduationsCSV() {
     return flat;
   });
   const base = ["mint", "symbol", "gradAtISO", "utcHour", "dow", "session", "weekend",
-    "creator", "venue", "launchToGradSec", "priceAtGrad", "mcapAtGrad", "peakBeforeGrad",
+    "creator", "venue", "grad_kind", "launchToGradSec", "priceAtGrad", "priceAtGrad_src", "mcapAtGrad", "peakBeforeGrad",
     "f_devSol", "f_priorGrads", "f_priorCount", "f_buyRatio"];
   const pathCols = offsets.flatMap(o => [`${o}_pcFromGrad`, `${o}_bp`, `${o}_volH1`]);
   download(`discovery-graduations-${new Date().toISOString().slice(0, 10)}.csv`, csv(rows, [...base, ...pathCols]));
@@ -237,7 +251,8 @@ export function downloadGraduationsCSV() {
 export function downloadCreatorsCSV() {
   const rows = getCreators().map(c => ({
     ...c,
-    gradRate: c.sustained ? (c.graduated / c.sustained).toFixed(3) : "",
+    // denominator = launches SEEN (was sustained, which gave rates above 1)
+    gradRate: c.seen ? (c.graduated / c.seen).toFixed(3) : "",
     dumpRate: c.graduated ? (c.dumpedPostGrad / c.graduated).toFixed(3) : "",
   }));
   download(`discovery-creators-${new Date().toISOString().slice(0, 10)}.csv`,

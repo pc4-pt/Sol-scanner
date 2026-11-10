@@ -1,4 +1,5 @@
 import { safeSetItem } from "./storageGuard.js";
+import { kvGet, kvSet } from "./kvStore.js";
 // ── FREE-CARRY RESIDUAL CAPTURE ────────────────────────────────────────────────
 // Answers one question: had we kept a slice of each TAKE_PROFIT position instead of
 // selling 100%, what would that slice have been worth over the next 24h, relative to
@@ -27,10 +28,10 @@ const CENSOR_GAP_S = 600;
 const PUMP_DECIMALS_SCALE = 1e6;
 
 function load() {
-  try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; }
+  return kvGet(KEY, null) || {};
 }
 function save(db) {
-  try { safeSetItem(KEY, JSON.stringify(db), { critical: true }); } catch { /* best effort */ }
+  kvSet(KEY, db);
 }
 
 // Called on a successful TAKE_PROFIT sell. tpCurve is the curve price (SOL/token) at

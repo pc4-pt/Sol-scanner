@@ -14,6 +14,7 @@ import { startFreeCarry, pollFreeCarry } from "./freeCarry.js";
 import { logMilestone, getMilestonePrice } from "./lifecycleLog.js";
 import { fireNotification } from "./notifications.js";
 import { safeSetItem } from "./storageGuard.js";
+import { simulateBuy, simulateSell, PAPER_CFG } from "./paperSim.js";
 
 // ── Storage ───────────────────────────────────────────────────────────────────
 const KEYS = {
@@ -154,6 +155,11 @@ export function useTrading() {
   // Track consecutive auto-sell failures per position. After 3 failures the
   // position is marked "stuck" and auto-sell stops retrying until user intervenes.
   const sellFailCountRef  = useRef(new Map());
+  // First failed exit attempt per position: {at, curvePrice, feedPrice}. Lets the eventual
+  // successful sell report how much the delay cost — the most direct measurement of the
+  // loss tail escaping the stop (research 2026-09-26c).
+  const firstSellTriggerRef = useRef(new Map());
+  const sellFailFeeRef      = useRef(new Map());   // positionId -> SOL paid on failed sells
   // Two-scan confirmation: track tokens that showed valid signals on previous scans.
   const candidatesRef     = useRef(new Map());
   // Always-current settings reference (for use in async/interval callbacks)
@@ -162,6 +168,11 @@ export function useTrading() {
 
   // Keep positionsRef current on every render
   useEffect(() => { positionsRef.current = positions; }, [positions]);
+  // History ref: closed trades move OUT of positions into history, so the daily-loss
+  // kill switch (which used to sum closed POSITIONS) never saw a single loss. It reads
+  // this instead, filtered to the current trade mode.
+  const historyRef = useRef(history);
+  useEffect(() => { historyRef.current = history; }, [history]);
 
   // Persist to localStorage
   useEffect(() => { save(KEYS.positions, positions); }, [positions]);
@@ -325,13 +336,18 @@ export function useTrading() {
 
   // ── Execute buy ───────────────────────────────────────────────────────────
   const executeBuy = useCallback(async (queueItem) => {
-    if (!effConnected || !effPublicKey || !effSignTransaction) {
+    // PAPER MODE: identical pipeline, simulated fill. Decided per buy from settings;
+    // the position then carries its own flag, so its exits route correctly even if the
+    // mode is switched while it is open.
+    const paper = (settings.tradeMode ?? "paper") === "paper";
+    const tradeMode = paper ? "paper" : "live";
+    if (!paper && (!effConnected || !effPublicKey || !effSignTransaction)) {
       // This returns BEFORE the try block, so it never reached the buy_failed logging —
       // which is why the failed-buy capture read zero despite real wallet failures.
       // The item deliberately stays queued: it is retryable once the wallet is back.
       logMilestone(queueItem.tokenAddress, queueItem.symbol, "buy_failed", {
         price: queueItem.priceUsd ?? "",
-        buy_failed: 1, buy_fail_reason: "wallet_not_connected", buy_fail_stage: "pre_signer",
+        buy_failed: 1, buy_fail_reason: "wallet_not_connected", buy_fail_stage: "pre_signer", trade_mode: tradeMode,
       });
       console.warn(`[buyfail] ${queueItem.symbol} — wallet not connected (stays queued)`);
       notify("Wallet not connected — please connect Phantom or Solflare", "error");
@@ -439,7 +455,14 @@ export function useTrading() {
         }
       }
 
-      const { sig, confirmed, err } = await pumpPortalTrade({
+      const decisionCurve = (curveState && curveState.virtualTokenReserves > 0)
+        ? curveState.virtualSolReserves / curveState.virtualTokenReserves : null;
+      const sim = paper ? await simulateBuy({
+        connection, getBondingCurveState, mint: queueItem.tokenAddress,
+        stakeSOL: queueItem.stakeSOL ?? settings.stakeSOL ?? 0.1,
+        slippagePct: settings.pumpSlippage ?? 5, decisionCurve,
+      }) : null;
+      const { sig, confirmed, err } = paper ? sim : await pumpPortalTrade({
         publicKey:       effPublicKey.toBase58(),
         action:          "buy",
         mint:            queueItem.tokenAddress,
@@ -462,13 +485,15 @@ export function useTrading() {
           buy_failed: 1, buy_fail_stage: "unconfirmed",
           buy_fail_reason: slipFail ? "slippage_exceeded" : String(err || "timeout").slice(0, 120),
           buy_fail_slippage_pct: settings.pumpSlippage ?? 5,
+          trade_mode: tradeMode,
+          sim_fill_move_pct: sim?.sim_fill_move_pct ?? "",
         });
         console.warn(`[buyfail] ${queueItem.symbol} unconfirmed — ${slipFail ? "SLIPPAGE EXCEEDED" : (err || "timeout")}`);
         // A tx that LANDED and failed on-chain (e.g. slippage) still paid base + priority
         // fee. That cost never reaches pnlPct, so record it for the futility rule
         // (research 2026-09-26b, amendment 4). Fire-and-forget: getTxSolDelta retries for
         // ~15s and a dropped tx returns null, which must not hold up the retry.
-        if (sig) {
+        if (sig && !paper) {
           const mint = queueItem.tokenAddress, sym = queueItem.symbol;
           getTxSolDelta(connection, sig, effPublicKey).then(d => {
             if (d != null && d < 0) logMilestone(mint, sym, "buy_fail_fee", {
@@ -483,12 +508,18 @@ export function useTrading() {
 
       // Measure the ACTUAL fill from the confirmed tx (captures curve slippage + fees)
       // Prefer the tx's own token delta (settlement-safe); fall back to a balance read.
-      let tokensReceived = await getTxTokenDelta(connection, sig, effPublicKey, queueItem.tokenAddress);
-      if (!(tokensReceived > 0)) {
-        tokensReceived = await getTokenBalance(connection, effPublicKey, queueItem.tokenAddress);
+      let tokensReceived, actualSolSpent;
+      if (paper) {
+        tokensReceived = sim.tokensReceived;
+        actualSolSpent = sim.actualSolSpent;
+      } else {
+        tokensReceived = await getTxTokenDelta(connection, sig, effPublicKey, queueItem.tokenAddress);
+        if (!(tokensReceived > 0)) {
+          tokensReceived = await getTokenBalance(connection, effPublicKey, queueItem.tokenAddress);
+        }
+        const solDelta = await getTxSolDelta(connection, sig, effPublicKey);   // negative on a buy
+        actualSolSpent = (solDelta != null && solDelta < 0) ? -solDelta : queueItem.stakeSOL;
       }
-      const solDelta       = await getTxSolDelta(connection, sig, effPublicKey);   // negative on a buy
-      const actualSolSpent = (solDelta != null && solDelta < 0) ? -solDelta : queueItem.stakeSOL;
       const inAmountSol = actualSolSpent;
       const outAmount   = tokensReceived;
       const priceImpact = 0;
@@ -552,6 +583,7 @@ export function useTrading() {
         configuredSL:   queueItem.stopLossPct,    // original setting for reference
         entryVolatility:entryVol,                  // for display
         status:         "open",
+        paper,                                     // true = simulated fill, never touches the wallet
         entryTx:        sig,
         entrySignal:    queueItem.signal,
         score:          queueItem.score,
@@ -600,12 +632,15 @@ export function useTrading() {
         entry_slip_pct: entrySlipPct != null ? +entrySlipPct.toFixed(2) : "",
         sol_spent: +actualSolSpent.toFixed(6),
         sol_over_stake: feeSol != null ? +feeSol.toFixed(6) : "",
+        trade_mode: tradeMode,
+        sim_venue: sim?.sim_venue ?? "",
+        sim_fill_move_pct: sim?.sim_fill_move_pct ?? "",
       });
 
       const slNote = adaptiveSL !== queueItem.stopLossPct
         ? ` · SL widened to ${adaptiveSL}% (volatility ${entryVol.toFixed(0)})`
         : "";
-      notify(`✓ Bought ${queueItem.symbol} · ${inAmountSol.toFixed(4)} SOL${slNote} · tx ${sig.slice(0,8)}…`, "success");
+      notify(`✓ ${paper ? "PAPER bought" : "Bought"} ${queueItem.symbol} · ${inAmountSol.toFixed(4)} SOL${slNote} · ${paper ? "simulated" : `tx ${sig.slice(0,8)}…`}`, "success");
       fireNotification({
         kind: "fill",
         title: `✓ Bought ${queueItem.symbol}`,
@@ -628,6 +663,7 @@ export function useTrading() {
         buy_failed: 1,
         buy_fail_reason: slipFail ? "slippage_exceeded" : msg.slice(0, 120),
         buy_fail_slippage_pct: settings.pumpSlippage ?? 5,
+        trade_mode: tradeMode,
       });
       console.warn(`[buyfail] ${queueItem.symbol} — ${slipFail ? "SLIPPAGE EXCEEDED" : "other"}: ${msg.slice(0,100)}`);
       notify(`Buy failed: ${msg}`, "error");
@@ -643,6 +679,8 @@ export function useTrading() {
       buyFiringRef.current.delete(queueItem.id);
     }
   }, [effConnected, effPublicKey, effSignTransaction, connection, positions, settings, notify]);
+  // NOTE: the success path falls through and returns undefined; the auto-buy driver
+  // treats anything other than an explicit `false` as a fill. Kept as-is deliberately.
 
   // ── AUTO-BUY DRIVER ────────────────────────────────────────────────────────
   // When autoExecute is ON, automatically buy newly-queued tokens — but only through a
@@ -656,7 +694,8 @@ export function useTrading() {
   const autoBuyFailCountRef = useRef(new Map());   // queueId -> consecutive failed attempts
   useEffect(() => {
     if (!(settings.autoExecute ?? false)) return;
-    if (!effConnected || !effPublicKey || !effSignTransaction) return;
+    const paperMode = (settings.tradeMode ?? "paper") === "paper";
+    if (!paperMode && (!effConnected || !effPublicKey || !effSignTransaction)) return;
     if (autoBuyBusyRef.current) return;
     if (autoBuyHaltedRef.current) return;
 
@@ -678,8 +717,9 @@ export function useTrading() {
 
         // RAIL 2 — daily-loss kill switch (realised losses since local midnight)
         const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
-        const todayPnl = (positionsRef.current)
-          .filter(p => p.status === "closed" && (p.closedAt || 0) >= midnight.getTime())
+        // Same-mode trades only: paper losses must not halt live trading, or vice versa.
+        const todayPnl = (historyRef.current || [])
+          .filter(p => !!p.paper === paperMode && (p.closedAt || 0) >= midnight.getTime())
           .reduce((a, p) => a + (p.pnlSol || 0), 0);
         if (todayPnl <= -Math.abs(s.autoBuyDailyLossKillSOL ?? 0.3)) {
           if (!autoBuyHaltedRef.current) {
@@ -690,17 +730,19 @@ export function useTrading() {
           return;
         }
 
-        // RAIL 3 — per-session spend cap
-        if (autoBuySpentRef.current + stake > (s.autoBuySessionCapSOL ?? 0.5)) {
-          notify(`Auto-buy paused — session cap ${s.autoBuySessionCapSOL ?? 0.5} SOL reached `
+        // RAIL 3 — per-session spend cap (paper has its own, larger cap: it spends nothing,
+        // but an unbounded paper run would make the session cap untestable)
+        const cap = paperMode ? (s.paperSessionCapSOL ?? 50) : (s.autoBuySessionCapSOL ?? 0.5);
+        if (autoBuySpentRef.current + stake > cap) {
+          notify(`Auto-buy paused — ${paperMode ? "paper " : ""}session cap ${cap} SOL reached `
             + `(spent ${autoBuySpentRef.current.toFixed(3)}).`, "warn");
           autoBuyHaltedRef.current = true;
           return;
         }
 
-        // RAIL 4 — burner balance floor (bounds max total spend to balance - floor)
-        let bal = null;
-        try { bal = await getSolBalance(connection, effPublicKey); } catch { /* treat as unknown */ }
+        // RAIL 4 — burner balance floor (live only: paper never touches the wallet)
+        let bal = paperMode ? Infinity : null;
+        if (!paperMode) { try { bal = await getSolBalance(connection, effPublicKey); } catch { /* treat as unknown */ } }
         const floor = s.autoBuyMinBurnerSOL ?? 0.05;
         if (bal == null) {
           notify(`Auto-buy skipped ${candidate.symbol} — can't read burner balance (safety)`, "warn");
@@ -719,7 +761,7 @@ export function useTrading() {
         // session budget yet — a failed buy spends nothing, and counting it would burn
         // the cap on trades that never happened. Budget is charged on success below.
         autoBuyAttemptedRef.current.add(candidate.id);
-        notify(`🤖 Auto-buying ${candidate.symbol} (${stake} SOL) — `
+        notify(`🤖 ${paperMode ? "PAPER " : ""}Auto-buying ${candidate.symbol} (${stake} SOL) — `
           + `${openCount + 1}/${s.maxConcurrentPositions ?? 3} slots, `
           + `${autoBuySpentRef.current.toFixed(3)}/${s.autoBuySessionCapSOL ?? 0.5} SOL session`, "info");
         const ok = await executeBuy(candidate);
@@ -747,15 +789,16 @@ export function useTrading() {
         autoBuyBusyRef.current = false;
       }
     })();
-  }, [queue, settings.autoExecute, effConnected, effPublicKey, effSignTransaction, connection, executeBuy, notify]);
+  }, [queue, settings.autoExecute, settings.tradeMode, effConnected, effPublicKey, effSignTransaction, connection, executeBuy, notify]);
 
-  // Reset the session spend / kill-switch latch whenever auto-execute is toggled OFF→ON.
+  // Reset the session spend / kill-switch latch whenever auto-execute is toggled OFF→ON,
+  // or the trade mode changes (paper and live budgets must never share a counter).
   useEffect(() => {
     if (settings.autoExecute) {
       autoBuySpentRef.current = 0;
       autoBuyHaltedRef.current = false;
     }
-  }, [settings.autoExecute]);
+  }, [settings.autoExecute, settings.tradeMode]);
 
 
   // ── Execute sell ──────────────────────────────────────────────────────────
@@ -804,7 +847,9 @@ export function useTrading() {
   }, [effPublicKey, effSignTransaction, connection, settings]);
 
   const executeSell = useCallback(async (position, reason = "MANUAL") => {
-    if (!effConnected || !effPublicKey || !effSignTransaction) {
+    const paper = !!position.paper;
+    const tradeMode = paper ? "paper" : "live";
+    if (!paper && (!effConnected || !effPublicKey || !effSignTransaction)) {
       notify("Wallet not connected", "error");
       return;
     }
@@ -841,7 +886,15 @@ export function useTrading() {
     notify(`Selling ${position.symbol} (${reason})…`, "info");
 
     try {
-      const { sig, confirmed, err, slippageUsed, attempts } = await nativeSell(position.tokenAddress, "100%");
+      const remainingFrac = position.partialTaken
+        ? Math.max(1 - (settings.partialTpFraction ?? 0.5), 0.01) : 1;
+      const sim = paper ? await simulateSell({
+        connection, getBondingCurveState, fetchTokenActivity, mint: position.tokenAddress,
+        tokensHeld: position.tokensReceived, fraction: remainingFrac,
+        solUsd: await getSolUsd().catch(() => null),
+      }) : null;
+      const { sig, confirmed, err, slippageUsed, attempts } = paper ? sim
+        : await nativeSell(position.tokenAddress, "100%");
       if (!confirmed) {
         // Exit didn't confirm (likely slippage at the capped ladder). Count it and
         // let the monitor retry on the next poll; only mark stuck after repeated
@@ -856,6 +909,24 @@ export function useTrading() {
         const gradType = /400|6005|Bad Request/i.test(String(err || "") + " " + String(attempts || ""));
         const limit = gradType ? (settings.gradSellMaxRetries ?? 20) : 3;
         const giveUp = c >= limit;
+        if (!firstSellTriggerRef.current.has(position.id)) {
+          firstSellTriggerRef.current.set(position.id, { at: triggerAt, curvePrice: triggerCurvePrice, feedPrice: triggerPrice });
+        }
+        logMilestone(position.tokenAddress, position.symbol, "sell_failed", {
+          sell_fail_count: c, sell_fail_reason: String(err || "unconfirmed").slice(0, 120),
+          sell_fail_attempts: String(attempts || "").slice(0, 200), trade_mode: tradeMode,
+        });
+        // A landed-but-failed sell still paid fees (live only). Fire-and-forget.
+        if (sig && !paper) {
+          getTxSolDelta(connection, sig, effPublicKey).then(d => {
+            if (d != null && d < 0) {
+              const prev = sellFailFeeRef.current.get(position.id) || 0;
+              sellFailFeeRef.current.set(position.id, prev + (-d));
+              logMilestone(position.tokenAddress, position.symbol, "sell_fail_fee", {
+                sell_fail_fee_sol: +(prev + (-d)).toFixed(6), sell_fail_sig: sig });
+            }
+          }).catch(() => {});
+        }
         console.warn(`[sell] ${position.symbol} FAILED (${c}/${limit}${gradType ? " grad" : ""}) — attempts: ${attempts || err}`);
         notify(`Sell attempt ${c} failed for ${position.symbol}: ${err || "unconfirmed"}`
           + (giveUp ? " — marked stuck" : gradType ? " — migrating, retrying" : " — retrying"), "warn");
@@ -868,7 +939,7 @@ export function useTrading() {
         return;
       }
       // True SOL received from the confirmed tx (fixes the phantom -100% from racing snapshots)
-      const solDelta    = await getTxSolDelta(connection, sig, effPublicKey);
+      const solDelta    = paper ? sim.solReceived : await getTxSolDelta(connection, sig, effPublicKey);
       const finalProceeds = (solDelta != null && solDelta > 0) ? solDelta
         : Math.max((position.currentPrice / (position.entryPrice || position.currentPrice)) * position.solSpent, 0);
       // total proceeds include any earlier partial take-profit
@@ -877,7 +948,12 @@ export function useTrading() {
       // Reclaim the rent locked in the now-empty token account (~0.00204 SOL, ~87% of the
       // per-trade fee). Deliberately fire-and-forget AFTER the sell has settled: it must
       // never delay or endanger the trade itself, and it self-skips if not empty.
-      if (settings.reclaimAccountRent ?? true) {
+      if (paper) {
+        // paper: the rent deposit charged at buy would come back here; record it the
+        // same way live does (separate column, not folded into pnlPct)
+        logMilestone(position.tokenAddress, position.symbol, "rent_reclaimed", {
+          rent_reclaimed_sol: PAPER_CFG.rentSol, rent_reclaim_estimated: 1 });
+      } else if (settings.reclaimAccountRent ?? true) {
         setTimeout(() => {
           closeTokenAccount({ connection, pubkey: effPublicKey,
             mint: position.tokenAddress, signTransaction: effSignTransaction })
@@ -937,6 +1013,7 @@ export function useTrading() {
       };
 
       positionAddrsRef.current.delete(position.tokenAddress);
+      const sellFailsBeforeFill = sellFailCountRef.current.get(position.id) || 0;
       sellFailCountRef.current.delete(position.id);  // success — reset fail counter
       setPositions(prev => prev.filter(p => p.id !== position.id));
       setHistory(prev => [closed, ...prev].slice(0, 100));
@@ -959,6 +1036,23 @@ export function useTrading() {
         pnlPct: parseFloat(pnlPct.toFixed(2)),
         peakPnlPct: position.peakPnlPct ?? null, exitReason: reason,
         partialTaken: !!position.partialTaken,
+        trade_mode: tradeMode,
+        sim_exit_venue: sim?.sim_venue ?? "",
+        exit_price_source: settings.exitPriceSource ?? "feed",
+        // failed-sell delay cost: first failed trigger → eventual fill
+        ...(() => {
+          const f = firstSellTriggerRef.current.get(position.id);
+          if (!f) return { sell_fail_count: 0 };
+          firstSellTriggerRef.current.delete(position.id);
+          return {
+            sell_fail_count: sellFailsBeforeFill,
+            sell_fail_fee_sol: sellFailFeeRef.current.get(position.id) ?? "",
+            sell_delay_ms: Date.now() - f.at,
+            sell_first_trigger_curve: f.curvePrice ?? "",
+            sell_delay_cost_pct: (f.curvePrice > 0 && triggerCurvePrice > 0)
+              ? +(((triggerCurvePrice - f.curvePrice) / f.curvePrice) * 100).toFixed(2) : "",
+          };
+        })(),
         partialPct: position.partialPct ?? "",
         partialProceeds: position.partialProceeds ? parseFloat(position.partialProceeds.toFixed(6)) : "",
         partialEstimated: !!position.partialEstimated,
@@ -983,7 +1077,7 @@ export function useTrading() {
       });
 
       notify(
-        `${pnlSol >= 0 ? "✓" : "✗"} ${position.symbol} closed (${reason}) — ${sign}${pnlPct.toFixed(1)}% / ${sign}${pnlSol.toFixed(4)} SOL`,
+        `${pnlSol >= 0 ? "✓" : "✗"} ${paper ? "PAPER " : ""}${position.symbol} closed (${reason}) — ${sign}${pnlPct.toFixed(1)}% / ${sign}${pnlSol.toFixed(4)} SOL`,
         pnlSol >= 0 ? "success" : "warn"
       );
       // Manual sells fire as "fill", auto-sells (TP/SL/trail/BE) fire as "exit"
@@ -1024,7 +1118,8 @@ export function useTrading() {
     console.warn(`[partialTP] executePartialSell ENTER ${position.symbol} frac=${fraction} conn=${effConnected} pk=${!!effPublicKey} sign=${!!effSignTransaction}`);
     // Signer guard — same as executeBuy/executeSell. Without this, a dropped wallet
     // made effPublicKey null and .toBase58() threw mid-trade.
-    if (!effConnected || !effPublicKey || !effSignTransaction) {
+    const paper = !!position.paper;
+    if (!paper && (!effConnected || !effPublicKey || !effSignTransaction)) {
       notify(`Partial TP skipped for ${position.symbol} — wallet not connected`, "warn");
       return;
     }
@@ -1032,13 +1127,18 @@ export function useTrading() {
     partialFiringRef.current.add(position.id);
     try {
       const pctStr = `${Math.round(fraction * 100)}%`;
-      const { sig, confirmed, err, slippageUsed, attempts } = await nativeSell(position.tokenAddress, pctStr);
+      const psim = paper ? await simulateSell({
+        connection, getBondingCurveState, fetchTokenActivity, mint: position.tokenAddress,
+        tokensHeld: position.tokensReceived, fraction, solUsd: await getSolUsd().catch(() => null),
+      }) : null;
+      const { sig, confirmed, err, slippageUsed, attempts } = paper ? psim
+        : await nativeSell(position.tokenAddress, pctStr);
       if (!confirmed) {
         console.warn(`[partialTP] ${position.symbol} SELL FAILED — attempts: ${attempts || err}`);
         notify(`Partial TP failed for ${position.symbol}: ${err || "unconfirmed"}`, "warn");
         return;
       }
-      const solDelta = await getTxSolDelta(connection, sig, effPublicKey);
+      const solDelta = paper ? psim.solReceived : await getTxSolDelta(connection, sig, effPublicKey);
       let proceeds, estimated = false;
       if (solDelta != null && solDelta > 0) {
         proceeds = solDelta;
@@ -1094,9 +1194,9 @@ export function useTrading() {
           // stay under DexScreener's ~300/min limit with several open positions.
           let act = null;
           try { act = await fetchTokenActivity(pos.tokenAddress); } catch { /* fall back to price */ }
-          const price = act?.priceUsd || await fetchCurrentPrice(pos.tokenAddress);
+          let price = act?.priceUsd || await fetchCurrentPrice(pos.tokenAddress);
           if (!price) continue;
-          const pnl  = calcPnl(pos, price);
+          let pnl  = calcPnl(pos, price);
 
           // ── CURVE-DERIVED PAPER BENCHMARK ───────────────────────────────────
           // decision_price and trigger_price both come from the polled feed, which
@@ -1109,7 +1209,8 @@ export function useTrading() {
           if (pos.entryCurvePrice > 0) {
             const tick = (curveTickRef.current.get(pos.id) || 0) + 1;
             curveTickRef.current.set(pos.id, tick);
-            if (tick % (settingsRef.current.curvePollEveryNTicks ?? 2) === 0) {
+            const curveMode = (settingsRef.current.exitPriceSource ?? "feed") === "curve";
+            if (curveMode || tick % (settingsRef.current.curvePollEveryNTicks ?? 2) === 0) {
               try {
                 const cs = await getBondingCurveState(connection, pos.tokenAddress);
                 if (cs && cs.virtualTokenReserves > 0) {
@@ -1120,6 +1221,18 @@ export function useTrading() {
                   curveLastRef.current.set(pos.id, { pct: curvePct, price: cp, at: Date.now() });
                 }
               } catch { /* benchmark only — never gates a trade */ }
+            }
+            // ── CURVE-DRIVEN EXITS (exitPriceSource = "curve", experimental) ─────
+            // Every exit rule (TP, stops, break-even, early stop) normally runs on the
+            // polled DexScreener price, which prints prices that never traded: upward
+            // prints fired false TPs (peak/exit-slip correlation -0.89) and downward
+            // prints can fire false stops. In curve mode the monitor maps the on-chain
+            // curve move onto the USD entry price, so every exit rule sees chain truth.
+            // Costs one RPC read per open position per tick. Falls back to the feed
+            // when the curve is unreadable or the token has graduated.
+            if (curveMode && curvePct != null) {
+              price = pos.entryPrice * (1 + curvePct / 100);
+              pnl = calcPnl(pos, price);
             }
           }
 
@@ -1195,8 +1308,8 @@ export function useTrading() {
             // silent non-fire becomes visible instead of guessed at
             const freshP = positionsRef.current.find(p => p.id === pos.id);
             const block =
-              !effConnected ? "no effConnected"
-              : !effPublicKey ? "no effPublicKey"
+              (!pos.paper && !effConnected) ? "no effConnected"
+              : (!pos.paper && !effPublicKey) ? "no effPublicKey"
               : partialFiringRef.current.has(pos.id) ? "already firing"
               : !freshP ? "no freshP"
               : freshP.status !== "open" ? "not open"
@@ -1259,7 +1372,7 @@ export function useTrading() {
             tpConfirmRef.current.delete(pos.id);   // target lost — reset the streak
           }
 
-          if (exit && effConnected && effPublicKey
+          if (exit && (pos.paper || (effConnected && effPublicKey))
               && !autoSellFiringRef.current.has(pos.id)
               && !partialFiringRef.current.has(pos.id)) {   // don't collide with an in-flight partial
             const freshPos = positionsRef.current.find(p => p.id === pos.id);
@@ -1573,17 +1686,21 @@ export function useTrading() {
     }, 6000);
     return () => clearInterval(iv);
   }, []);
+  // Stats are per trade mode: paper and live results are never pooled.
+  const isPaperMode = (settings.tradeMode ?? "paper") === "paper";
+  const modeHistory = history.filter(p => !!p.paper === isPaperMode);
   const stats = {
     openCount:   positions.filter(p => p.status === "open").length,
     queueCount:  queue.length,
-    totalPnlSol: history.reduce((s, p) => s + (p.pnlSol || 0), 0),
-    totalPnlPct: history.length
-      ? history.reduce((s, p) => s + (p.pnlPct || 0), 0) / history.length
+    totalPnlSol: modeHistory.reduce((s, p) => s + (p.pnlSol || 0), 0),
+    totalPnlPct: modeHistory.length
+      ? modeHistory.reduce((s, p) => s + (p.pnlPct || 0), 0) / modeHistory.length
       : 0,
-    winRate:     history.length
-      ? (history.filter(p => p.pnlSol > 0).length / history.length) * 100
+    winRate:     modeHistory.length
+      ? (modeHistory.filter(p => p.pnlSol > 0).length / modeHistory.length) * 100
       : 0,
-    tradeCount: history.length,
+    tradeCount: modeHistory.length,
+    mode: isPaperMode ? "paper" : "live",
   };
 
   return {
@@ -1601,7 +1718,8 @@ export function useTrading() {
     checkAndQueue,
     stats,
     connected,
-    canTrade: effConnected,
+    canTrade: effConnected || isPaperMode,
+    paperMode: isPaperMode,
     tradingAddress: effPublicKey?.toString?.() || null,
     walletAddress: publicKey?.toString(),
   };

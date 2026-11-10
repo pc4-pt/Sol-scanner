@@ -446,6 +446,15 @@ export function shouldTriggerExit(position, currentPrice, opts = {}) {
 
 export const DEFAULT_TRADE_SETTINGS = {
   stakeSOL:           0.1,
+  // PAPER TRADING (2026-11-10). "paper" runs the full pipeline with fills simulated
+  // against the live bonding curve (paperSim.js); "live" spends real SOL. Every
+  // lifecycle row carries trade_mode so the two are never pooled.
+  tradeMode:          "paper",       // defaults to PAPER: nothing spends SOL until you switch to LIVE
+  paperSessionCapSOL: 50,
+  // Price the exit rules on: "feed" (DexScreener, current behaviour) or "curve"
+  // (on-chain bonding curve each tick; falls back to feed after graduation).
+  // Experimental — A/B it in paper mode before using it live.
+  exitPriceSource:    "feed",
   // ── Native execution (PumpPortal, sole path for launch trades) ───────────
   pumpSlippage:       5,          // 15 -> 5. With a +15% target, authorising fills up to 15%
                                   // worse than quote lets slippage eat the ENTIRE edge before

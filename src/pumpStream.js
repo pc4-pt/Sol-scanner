@@ -11,9 +11,10 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { CreatorHistory, launchScore, markGraduated } from "./launchScore.js";
 import { fetchTokenActivity, computeTiming, isSolQuoted } from "./tradingEngine.js";
 import { logMilestone, recordPeak, recordFeatures } from "./lifecycleLog.js";
-import { recordGraduation, recordGradSnapshot, recordCreatorEvent,
+import { setGradPriceFallback, recordGraduation, recordGradSnapshot, recordCreatorEvent,
          recordTrajectoryStart, recordTrajectorySnapshot,
          getPendingGradTracking } from "./discoveryLog.js";
+import { kvGet, kvSet } from "./kvStore.js";
 
 const URL = "wss://pumpportal.fun/api/data";
 
@@ -169,6 +170,7 @@ export function useLaunchStream({
     const engine = createPumpStream({
       onLaunch: (l) => {
         streamDiag.arrivals.push(Date.now());
+        if (l.creator) { try { recordCreatorEvent(l.creator, "seen"); } catch { /* passive */ } }
         setLaunches((prev) => {
           if (prev.some((x) => x.mint === l.mint)) return prev;   // dedupe by mint
           const next = [{ ...l, eligibility: { state: "pending" } }, ...prev];
@@ -495,7 +497,11 @@ function useGradTracker(gradTrackRef, enabled) {
           const act = await fetchTokenActivity(mint);
           if (act) {
             const bp = act.trades5m > 0 ? act.buys5m / act.trades5m : "";
-            const g = getGradPrice(mint);
+            // No price at graduation (the token was never polled before it migrated —
+            // 70% of rows on 11-09): anchor to the FIRST post-graduation sample and say so,
+            // rather than leaving every pcFromGrad blank.
+            let g = getGradPrice(mint);
+            if (!g && act.priceUsd > 0) { setGradPriceFallback(mint, act.priceUsd, due[0]?.label); g = act.priceUsd; }
             const pcFromGrad = (g && act.priceUsd) ? ((act.priceUsd - g) / g) * 100 : "";
             for (const o of due) {
               recordGradSnapshot(mint, o.label, {
@@ -504,8 +510,10 @@ function useGradTracker(gradTrackRef, enabled) {
               });
               t.done[o.label] = true;
               // creator dump/survive verdict at the 15m mark
-              if (o.label === "t+15m" && t.creator) {
-                recordCreatorEvent(t.creator, (pcFromGrad !== "" && pcFromGrad <= -50) ? "dumped" : "survived");
+              // Unknown pcFromGrad previously counted as "survived", so every creator's
+              // dumpRate read 0.000. No price, no verdict.
+              if (o.label === "t+15m" && t.creator && pcFromGrad !== "") {
+                recordCreatorEvent(t.creator, pcFromGrad <= -50 ? "dumped" : "survived");
               }
             }
           }
@@ -519,7 +527,7 @@ function useGradTracker(gradTrackRef, enabled) {
 // price at graduation, read back from the discovery store
 function getGradPrice(mint) {
   try {
-    const db = JSON.parse(localStorage.getItem("discovery_graduations_v1") || "{}");
+    const db = kvGet("discovery_graduations_v1", null) || {};
     const p = db[mint]?.priceAtGrad;
     return (typeof p === "number" && p > 0) ? p : null;
   } catch { return null; }

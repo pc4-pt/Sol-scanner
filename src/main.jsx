@@ -7,11 +7,12 @@ import { SolflareWalletAdapter } from "@solana/wallet-adapter-solflare";
 import "@solana/wallet-adapter-react-ui/styles.css";
 import App from "./App.jsx";
 import { ErrorBoundary } from "./ErrorBoundary.jsx";
+import { kvInit } from "./kvStore.js";
 
 // Build stamp — bump on each packaged build so you can confirm at a glance WHICH build
 // is actually deployed. "git status clean" only proves your tree matches your last
 // commit; this proves which code is live. Open the console on load to check.
-export const BUILD_ID = "2026-10-27a · storage guard (loud quota errors, protect trading state)";
+export const BUILD_ID = "2026-11-10a · paper trading + IndexedDB research store + kill-switch fix";
 console.log(`%c[build] sol-scanner — ${BUILD_ID}`, "color:#00e5c3;font-weight:700");
 
 // Wallet adapter CSS override — match our dark theme
@@ -56,6 +57,11 @@ function Root() {
   );
 }
 
-createRoot(document.getElementById("root")).render(
-  <StrictMode><Root /></StrictMode>
-);
+// Research stores load from IndexedDB before the first render, so every synchronous
+// read in the app sees the full data set. kvInit never throws: it falls back to
+// localStorage if IndexedDB is unavailable.
+kvInit().finally(() => {
+  createRoot(document.getElementById("root")).render(
+    <StrictMode><Root /></StrictMode>
+  );
+});
